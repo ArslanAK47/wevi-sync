@@ -536,6 +536,16 @@ h1 {
     accent-color: var(--accent-primary);
 }
 
+/* Build Footer */
+.build-footer {
+    margin-top: 12px;
+    padding: 8px;
+    text-align: center;
+    font-size: 10px;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border-color);
+}
+
 /* Modal Buttons Stack */
 .modal-buttons {
     display: flex;
