@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/TeamSync-Installer.zip
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment / secrets
+.env
+.env.local
+.env.production
+
+# Test servers
+update-test-server/
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE
+.vscode/
+*.swp
+
+# Claude
+.claude/

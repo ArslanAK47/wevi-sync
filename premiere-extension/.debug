@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 
+  Debug configuration for Adobe CEP Extensions
+  This file enables debug mode for the extension during development
+-->
+<ExtensionList>
+  <Extension Id="com.premieresync.panel">
+    <HostList>
+      <Host Name="PPRO" Port="8088"/>
+    </HostList>
+  </Extension>
+</ExtensionList>

@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Premiere Sync - Admin Dashboard</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+
+<body>
+  <!-- Login Screen -->
+  <div id="login-screen" class="login-container">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="logo">🎬</div>
+        <h1>Premiere Sync</h1>
+        <p>Admin Dashboard</p>
+      </div>
+      <form id="login-form">
+        <div class="input-group">
+          <label for="username">Username</label>
+          <input type="text" id="username" value="admin" required>
+        </div>
+        <div class="input-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" placeholder="Enter password" required>
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">Login</button>
+        <p id="login-error" class="error-text"></p>
+      </form>
+    </div>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="dashboard" class="dashboard hidden">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <span class="logo-small">🎬</span>
+        <h1>Premiere Sync</h1>
+      </div>
+      <div class="header-right">
+        <button id="btn-settings" class="btn btn-ghost">⚙️ Settings</button>
+        <button id="btn-logout" class="btn btn-ghost">Logout</button>
+      </div>
+    </header>
+
+    <!-- Stats Cards -->
+    <section class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-icon">🔑</div>
+        <div class="stat-info">
+          <span class="stat-value" id="stat-total-keys">0</span>
+          <span class="stat-label">Active Keys</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">👥</div>
+        <div class="stat-info">
+          <span class="stat-value" id="stat-active-today">0</span>
+          <span class="stat-label">Active Today</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">🔄</div>
+        <div class="stat-info">
+          <span class="stat-value" id="stat-syncs">0</span>
+          <span class="stat-label">Syncs Today</span>
+        </div>
+      </div>
+      <div class="stat-card warning">
+        <div class="stat-icon">⚠️</div>
+        <div class="stat-info">
+          <span class="stat-value" id="stat-expiring">0</span>
+          <span class="stat-label">Expiring Soon</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tabs -->
+    <nav class="tabs">
+      <button class="tab active" data-tab="keys">🔑 API Keys</button>
+      <button class="tab" data-tab="projects">📁 Projects & Files</button>
+      <button class="tab" data-tab="activity">📜 Activity Log</button>
+      <button class="tab" data-tab="locks">🔒 Project Locks</button>
+    </nav>
+
+    <!-- API Keys Tab -->
+    <section id="tab-keys" class="tab-content active">
+      <div class="section-header">
+        <h2>API Keys</h2>
+        <button id="btn-generate-key" class="btn btn-primary">+ Generate New Key</button>
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Editor Name</th>
+              <th>Created</th>
+              <th>Expires</th>
+              <th>Last Used</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="keys-table-body">
+            <!-- Keys will be inserted here -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Projects & Files Tab -->
+    <section id="tab-projects" class="tab-content">
+      <div class="section-header">
+        <h2>Projects & Files</h2>
+        <button id="btn-refresh-projects" class="btn btn-secondary">↻ Refresh</button>
+      </div>
+      <div class="projects-grid">
+        <div class="projects-list-panel">
+          <h3>Shared Projects</h3>
+          <div id="projects-list" class="project-cards">
+            <!-- Projects will be inserted here -->
+          </div>
+        </div>
+        <div class="files-list-panel">
+          <h3>Files in Selected Project</h3>
+          <div id="project-files" class="file-list">
+            <p class="empty-state">Select a project to view files</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Activity Log Tab -->
+    <section id="tab-activity" class="tab-content">
+      <div class="section-header">
+        <h2>Activity Log</h2>
+        <button id="btn-refresh-activity" class="btn btn-secondary">↻ Refresh</button>
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Editor</th>
+              <th>Action</th>
+              <th>Project</th>
+            </tr>
+          </thead>
+          <tbody id="activity-table-body">
+            <!-- Activity will be inserted here -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Project Locks Tab -->
+    <section id="tab-locks" class="tab-content">
+      <div class="section-header">
+        <h2>Project Locks</h2>
+        <button id="btn-refresh-locks" class="btn btn-secondary">↻ Refresh</button>
+      </div>
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Project</th>
+              <th>Locked By</th>
+              <th>Locked At</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="locks-table-body">
+            <!-- Locks will be inserted here -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Generate Key Modal -->
+  <div id="modal-generate" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Generate New API Key</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <form id="form-generate-key">
+        <div class="input-group">
+          <label for="editor-name">Editor Name</label>
+          <input type="text" id="editor-name" placeholder="e.g. Ali, Hassan" required>
+        </div>
+        <div class="input-group">
+          <label for="expires-days">Expires In (days)</label>
+          <input type="number" id="expires-days" value="30" min="1" max="365" required>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">Generate Key</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Key Generated Modal -->
+  <div id="modal-key-created" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>✅ Key Generated!</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <div class="key-display">
+        <p>Share this key with your editor:</p>
+        <div class="key-box">
+          <code id="generated-key"></code>
+          <button id="btn-copy-key" class="btn btn-small">📋 Copy</button>
+        </div>
+        <p class="key-note">⚠️ This is the only time you'll see the full key!</p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-primary modal-close">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="modal-settings" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>⚙️ Settings</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <form id="form-change-password">
+        <div class="input-group">
+          <label for="new-password">New Admin Password</label>
+          <input type="password" id="new-password" placeholder="Enter new password" required minlength="6">
+        </div>
+        <div class="input-group">
+          <label for="confirm-password">Confirm Password</label>
+          <input type="password" id="confirm-password" placeholder="Confirm new password" required>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">Change Password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="js/admin.js"></script>
+</body>
+
+</html>

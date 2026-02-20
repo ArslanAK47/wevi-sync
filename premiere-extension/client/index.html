@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Team Sync</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <!-- CEP Interface - only loads in Adobe CEP environment -->
+    <script src="js/lib/CSInterface.js"></script>
+</head>
+
+<body>
+    <!-- Activation Screen -->
+    <div id="activation-screen" class="screen">
+        <div class="center-content">
+            <div class="logo">🎬</div>
+            <h1>Project Sync</h1>
+            <p class="subtitle">Sync projects via Google Drive</p>
+
+            <!-- OAuth Device Flow UI -->
+            <div id="auth-connect" class="auth-section">
+                <div class="auth-status-box">
+                    <p class="auth-status-text" id="auth-status">Connect to Google Drive</p>
+                    <p class="auth-detail" id="auth-detail">Click below to authenticate</p>
+                </div>
+                <p id="activation-error" class="error-text"></p>
+                <button id="btn-google-connect" class="btn btn-primary btn-large" style="margin-top: 16px;">
+                    <span>☁️</span> Connect Google Drive
+                </button>
+
+                <!-- Debug Log Panel -->
+                <div id="debug-log-panel"
+                    style="margin-top: 16px; padding: 12px; background: #1e1e1e; border: 1px solid #333; border-radius: 6px; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 11px;">
+                    <div
+                        style="font-size: 10px; opacity: 0.6; margin-bottom: 8px; border-bottom: 1px solid #333; padding-bottom: 4px;">
+                        🐛 Debug Log</div>
+                    <div id="debug-log-content" style="color: #aaa;"></div>
+                </div>
+            </div>
+
+            <!-- Device Code Display -->
+            <div id="auth-device-code" class="auth-section hidden">
+                <div class="auth-status-box">
+                    <p class="auth-status-text">Waiting for authorization...</p>
+                    <p class="auth-detail">Go to: <a id="verification-url" href="#" target="_blank"
+                            style="color: var(--accent);">google.com/device</a></p>
+                    <div
+                        style="margin: 20px 0; padding: 16px; background: var(--bg-secondary); border-radius: 8px; text-align: center;">
+                        <div style="font-size: 12px; opacity: 0.7; margin-bottom: 8px;">Enter this code:</div>
+                        <strong id="device-code"
+                            style="font-size: 24px; letter-spacing: 4px; font-family: monospace;">XXXX-XXXX</strong>
+                    </div>
+                </div>
+                <button id="btn-cancel-auth" class="btn btn-secondary btn-full" style="margin-top: 16px;">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Panel -->
+    <div id="main-panel" class="screen hidden">
+        <!-- Header -->
+        <header class="panel-header">
+            <div class="header-info">
+                <span class="logo-small">🎬</span>
+                <div>
+                    <h2>Team Sync</h2>
+                    <span class="editor-name" id="display-editor-name">Editor</span>
+                </div>
+            </div>
+            <button id="btn-settings" class="btn-icon" title="Settings">⚙️</button>
+        </header>
+
+        <!-- Update Available Banner -->
+        <div id="update-banner" class="update-banner hidden">
+            <div class="update-banner-content">
+                <div class="update-info">
+                    <span class="update-icon">🔔</span>
+                    <div>
+                        <strong>Update Available!</strong>
+                        <span id="update-version-text" class="update-version">v0.0.0</span>
+                    </div>
+                </div>
+                <div class="update-actions">
+                    <button id="btn-update-now" class="btn btn-accent btn-small" onclick="performAutoUpdate()">Update
+                        Now</button>
+                    <button class="btn-icon btn-small" onclick="dismissUpdate()" title="Dismiss">✕</button>
+                </div>
+            </div>
+            <div id="update-progress" class="update-progress hidden">
+                <div class="progress-bar-container">
+                    <div id="update-progress-fill" class="progress-bar-fill" style="width: 0%"></div>
+                </div>
+                <span id="update-status-text">Downloading update...</span>
+            </div>
+        </div>
+
+        <!-- Sync Status -->
+        <div class="sync-status" id="sync-status">
+            <div class="status-icon">🔄</div>
+            <div class="status-info">
+                <span class="status-text" id="status-text">Connected</span>
+                <span class="status-time" id="last-check">Checking...</span>
+            </div>
+        </div>
+
+        <!-- Current Project (Auto-detected) -->
+        <div class="current-project-section" id="current-project-section">
+            <div class="section-title">
+                <span>📽️ Current Project</span>
+                <button id="btn-refresh-current" class="btn-icon" title="Refresh">↻</button>
+            </div>
+            <div class="current-project-card" id="current-project-card">
+                <div class="empty-state small">
+                    <p>No project open in Premiere</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sync Folder -->
+        <div class="folder-section">
+            <div class="folder-header">
+                <span>📁 Sync Folder</span>
+                <div class="folder-buttons">
+                    <button id="btn-browse-folder" class="btn-small btn-secondary">Browse...</button>
+                    <button id="btn-edit-path" class="btn-icon small" title="Edit path">✏️</button>
+                </div>
+            </div>
+            <div class="folder-path-display">
+                <span class="folder-path" id="folder-path">Click Browse to select</span>
+            </div>
+            <!-- Manual path input (hidden by default) -->
+            <div class="folder-input hidden" id="folder-input-section">
+                <input type="text" id="folder-path-input" placeholder="e.g., G:\My Drive\Team Projects">
+                <button id="btn-save-path" class="btn-small btn-primary">Save</button>
+            </div>
+        </div>
+
+        <!-- Team Projects (from server) -->
+        <div class="projects-section">
+            <div class="section-title">
+                <span>👥 Team Projects</span>
+                <button id="btn-refresh" class="btn-icon" title="Refresh">↻</button>
+            </div>
+            <div class="projects-list" id="projects-list">
+                <div class="empty-state">
+                    <p>No projects shared yet</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Debug Console -->
+        <div class="debug-console">
+            <div class="debug-header" onclick="toggleDebugConsole()">
+                <span>🐛 Debug Console</span>
+                <span id="debug-toggle">▼</span>
+            </div>
+            <div id="debug-panel" class="debug-panel hidden">
+                <div class="debug-controls">
+                    <button onclick="copyDebugLogs()" class="btn-small btn-secondary">📋 Copy Logs</button>
+                    <button onclick="clearDebugLogs()" class="btn-small btn-secondary">🗑️ Clear</button>
+                </div>
+                <textarea id="debug-output" readonly></textarea>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="action-bar">
+            <button id="btn-push" class="btn btn-primary" title="Push current project + timeline files to team">
+                <span>↑</span> Push Project
+            </button>
+            <button id="btn-add-file" class="btn btn-secondary" title="Add a project file manually">
+                <span>+</span> Add Project
+            </button>
+        </div>
+        <div class="push-scope-toggle">
+            <label class="checkbox-label" title="Off = timeline dependencies only. On = include all project panel media too.">
+                <input type="checkbox" id="toggle-include-project-media">
+                Include all project media (not just timeline)
+            </label>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="modal-settings" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Settings</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="settings-info">
+                <p><strong>Signed in as:</strong> <span id="settings-editor-name"></span></p>
+                <p><strong>Sync via:</strong> <span id="settings-server-url">Google Drive</span></p>
+                <p><strong>Account:</strong> <span id="settings-expires">Google Account</span></p>
+            </div>
+            <div class="settings-section">
+                <h4>Updates</h4>
+                <div class="settings-row">
+                    <span>Version: <strong id="settings-version">v1.0.0</strong></span>
+                    <button id="btn-check-updates" class="btn btn-secondary btn-small" onclick="checkForUpdates(true)">Check for Updates</button>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button id="btn-deactivate" class="btn btn-danger">Sign Out</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Project Action Modal -->
+    <div id="modal-project" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="project-modal-title">Project</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div id="project-modal-content">
+                <!-- Dynamic content -->
+            </div>
+        </div>
+    </div>
+
+    <!-- File Selection Modal -->
+    <div id="modal-files" class="modal hidden">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3>Select Files to Push</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="file-selection-controls">
+                <button id="btn-select-all" class="btn-small btn-secondary">Select All</button>
+                <button id="btn-select-none" class="btn-small btn-secondary">Select None</button>
+                <span id="files-scope-label" class="files-scope-label">Scope: Timeline only</span>
+                <span id="files-count" class="files-count">0 files selected</span>
+            </div>
+            <div id="file-selection-list" class="file-selection-list">
+                <!-- Files will be listed here -->
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary modal-close">Cancel</button>
+                <button id="btn-push-selected" class="btn btn-primary">Push Selected Files</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Upload Progress Modal -->
+    <div id="modal-upload-progress" class="modal hidden">
+        <div class="modal-content upload-progress-modal">
+            <div class="upload-header">
+                <h2>📤 Uploading Project</h2>
+                <div class="upload-stats">
+                    <span id="upload-speed">0 MB/s</span>
+                    <span id="upload-eta">Calculating...</span>
+                </div>
+            </div>
+
+            <div class="upload-progress-container">
+                <div class="progress-bar-wrapper">
+                    <div id="upload-progress-bar" class="progress-bar">
+                        <div class="progress-fill"></div>
+                    </div>
+                    <div class="progress-text">
+                        <span id="upload-percent">0%</span>
+                        <span id="upload-file-count">0 / 0 files</span>
+                    </div>
+                </div>
+
+                <div id="upload-current-file" class="current-file">
+                    Preparing upload...
+                </div>
+
+                <div id="upload-file-list" class="upload-file-list">
+                    <!-- Individual file progress items will be added here -->
+                </div>
+
+                <div class="upload-actions" style="margin-top: 15px; text-align: center;">
+                    <button id="btn-cancel-upload" class="btn btn-danger">Cancel Upload</button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Upload Report Modal -->
+    <div id="modal-upload-report" class="modal hidden">
+        <div class="modal-content upload-report-modal">
+            <div class="modal-header">
+                <h3>📊 Upload Report</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div id="upload-report-summary" class="upload-report-summary">
+                <!-- Summary will be rendered by JS -->
+            </div>
+            <div id="upload-report-list" class="upload-report-list">
+                <!-- Report rows will be rendered by JS -->
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary modal-close">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Download Progress Modal -->
+    <div id="modal-download-progress" class="modal hidden">
+        <div class="modal-content upload-progress-modal">
+            <div class="upload-header">
+                <h2>📥 Downloading Project</h2>
+                <div class="upload-stats">
+                    <span id="download-speed">0 MB/s</span>
+                    <span id="download-eta">Calculating...</span>
+                </div>
+            </div>
+
+            <div class="modal-body">
+                <p><strong id="download-project-name">Project Name</strong></p>
+            </div>
+
+            <div class="upload-progress-container">
+                <div class="progress-bar-wrapper">
+                    <div id="download-progress-bar" class="progress-bar">
+                        <div id="download-progress-fill" class="progress-fill" style="width: 0%"></div>
+                    </div>
+                    <div class="progress-text">
+                        <span id="download-percent">0%</span>
+                        <span id="download-files-count">0 / 0 files</span>
+                    </div>
+                </div>
+
+                <div class="download-stats-row">
+                    <span id="download-downloaded-count">0 downloaded</span>
+                    <span id="download-skipped-count">0 skipped</span>
+                    <span id="download-remaining-count">0 remaining</span>
+                </div>
+
+                <div id="download-current-file" class="current-file">
+                    Preparing download...
+                </div>
+
+                <div id="download-file-list" class="upload-file-list">
+                    <!-- Individual file download items will be added here -->
+                </div>
+
+                <div class="upload-actions" style="margin-top: 15px; text-align: center;">
+                    <button id="btn-cancel-download" class="btn btn-danger">Cancel Download</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- Project Explorer Modal -->
+    <div id="modal-project-explorer" class="modal hidden">
+        <div class="modal-content large-modal">
+            <div class="modal-header">
+                <h3>📂 Project Explorer: <span id="explorer-project-name">...</span></h3>
+                <button class="btn-icon btn-close-modal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="explorer-toolbar">
+                    <div class="explorer-status" id="explorer-status">Loading files...</div>
+                    <button id="btn-refresh-explorer" class="btn-icon header-action" title="Refresh">🔄</button>
+                </div>
+
+                <!-- Download Progress Bar -->
+                <div id="explorer-progress" class="explorer-progress hidden">
+                    <div class="progress-info">
+                        <span id="progress-file-name">Downloading...</span>
+                        <span id="progress-speed">0 KB/s</span>
+                    </div>
+                    <div class="progress-bar-container">
+                        <div id="progress-bar-fill" class="progress-bar-fill" style="width: 0%"></div>
+                    </div>
+                    <div class="progress-details">
+                        <span id="progress-percentage">0%</span>
+                        <span id="progress-size">0 / 0 MB</span>
+                    </div>
+                </div>
+
+                <div class="file-list-header">
+                    <div class="col-name">File Name</div>
+                    <div class="col-size">Size</div>
+                    <div class="col-status">Status</div>
+                    <div class="col-action">Action</div>
+                </div>
+
+                <div id="explorer-file-list" class="file-list-container">
+                    <!-- Files rendered here -->
+                </div>
+            </div>
+            <div class="modal-footer" style="display:flex;justify-content:space-between;">
+                <button class="btn btn-secondary btn-close-modal">Close</button>
+                <div class="pull-actions">
+                    <button id="btn-cancel-pull" class="btn btn-danger hidden" onclick="cancelPullAll()">Cancel</button>
+                    <button id="btn-pull-all" class="btn btn-primary" onclick="handlePullAll()">⬇️ Pull All</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating Upload Indicator (shows when modal is hidden but uploading) -->
+    <button id="upload-indicator" class="upload-indicator hidden" title="Show upload progress">
+        <span>📤 Upload in Progress...</span>
+    </button>
+
+    <!-- Floating Download Indicator (shows when explorer modal is hidden but downloading) -->
+    <button id="download-indicator" class="upload-indicator hidden" title="Show download progress"
+        onclick="reopenExplorerModal()">
+        <span>📥 Download in Progress...</span>
+    </button>
+
+    <script src="js/config.js"></script>
+    <script src="js/google-config.js"></script>
+    <script src="js/google-drive.js"></script>
+    <script src="js/sync.js"></script>
+    <script src="js/test-auth.js"></script>
+    <script src="js/upload-helper.js"></script>
+    <script src="js/download-helper.js"></script>
+    <script src="js/upload-xhr.js"></script>
+    <script src="js/update-checker.js"></script>
+    <script src="js/test-suite.js"></script>
+    <script src="js/main.js"></script>
+</body>
+
+</html>
