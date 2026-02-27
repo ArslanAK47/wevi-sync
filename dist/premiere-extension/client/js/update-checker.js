@@ -910,10 +910,22 @@ function updateSettingsVersion() {
 // Initialize on load
 initUpdateChecker();
 
-// Update settings when modal opens
+// Update settings when modal opens + set version badges from version.json
 document.addEventListener('DOMContentLoaded', () => {
     const settingsBtn = document.getElementById('btn-settings');
     if (settingsBtn) {
         settingsBtn.addEventListener('click', updateSettingsVersion);
+    }
+
+    // Auto-populate version badges from version.json
+    try {
+        const localData = getLocalVersion();
+        const ver = 'v' + (localData.version || '0.0.0');
+        const headerBadge = document.getElementById('header-version-badge');
+        const footerText = document.getElementById('footer-version-text');
+        if (headerBadge) headerBadge.textContent = ver;
+        if (footerText) footerText.textContent = ver;
+    } catch (e) {
+        console.warn('Could not set version badges:', e);
     }
 });
