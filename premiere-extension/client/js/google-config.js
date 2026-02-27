@@ -9,8 +9,8 @@ const GoogleDriveConfig = {
      * OAuth 2.0 Credentials
      * Use a "Desktop App" type client in Google Cloud Console
      */
-    clientId: '257286570354-m9rb40pa6bj3j13s6piu47qhphao2il5.apps.googleusercontent.com',
-    clientSecret: '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',
+    clientId: '491312886441-9o9r8t8e935covla98fnb3lu2ce0c2ec.apps.googleusercontent.com',
+    clientSecret: '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',
 
     /**
      * OAuth Scopes - full Drive access for shared folder support
