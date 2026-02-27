@@ -2,6 +2,26 @@
    GOOGLE DRIVE API - LOOPBACK OAUTH FLOW
    ============================================ */
 
+/**
+ * Retry helper for Google Drive API calls (handles 500/503 errors)
+ */
+async function withRetry(fn, maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            return await fn();
+        } catch (err) {
+            const is500 = err.message && (err.message.includes('500') || err.message.includes('503') || err.message.includes('Internal Error'));
+            if (is500 && attempt < maxRetries) {
+                const delay = attempt * 1500;
+                console.warn(`⚠️ Attempt ${attempt} failed (${err.message}), retrying in ${delay}ms...`);
+                await new Promise(r => setTimeout(r, delay));
+            } else {
+                throw err;
+            }
+        }
+    }
+}
+
 const GoogleDrive = {
     accessToken: null,
     refreshToken: null,
@@ -409,17 +429,20 @@ const GoogleDrive = {
         const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime,owners)&includeItemsFromAllDrives=true&supportsAllDrives=true`;
         console.log(`📂 URL: ${url}`);
 
-        const res = await fetch(url, {
-            headers: { 'Authorization': `Bearer ${token}` }
+        const data = await withRetry(async () => {
+            const res = await fetch(url, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            if (!res.ok) {
+                const errorText = await res.text();
+                console.error(`❌ List projects failed: ${res.status}`, errorText);
+                throw new Error(`Failed to list projects: ${res.status}`);
+            }
+
+            return await res.json();
         });
 
-        if (!res.ok) {
-            const errorText = await res.text();
-            console.error(`❌ List projects failed: ${res.status}`, errorText);
-            throw new Error(`Failed to list projects: ${res.status}`);
-        }
-
-        const data = await res.json();
         console.log(`📂 Found ${data.files?.length || 0} projects:`, data.files?.map(f => f.name));
         return data.files || [];
     },
@@ -521,16 +544,18 @@ const GoogleDrive = {
             do {
                 const query = `'${current.id}' in parents and trashed=false`;
                 const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=nextPageToken,files(id,name,mimeType,md5Checksum,size,modifiedTime)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`;
-                const res = await fetch(url, {
-                    headers: { Authorization: `Bearer ${token}` }
+                const data = await withRetry(async () => {
+                    const res = await fetch(url, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+
+                    if (!res.ok) {
+                        const errorText = await res.text();
+                        throw new Error(`Failed to list files in folder: ${res.status} ${errorText}`);
+                    }
+
+                    return await res.json();
                 });
-
-                if (!res.ok) {
-                    const errorText = await res.text();
-                    throw new Error(`Failed to list files in folder: ${res.status} ${errorText}`);
-                }
-
-                const data = await res.json();
                 const files = data.files || [];
 
                 for (const file of files) {
@@ -561,17 +586,18 @@ const GoogleDrive = {
         const token = await this.getValidToken();
         if (!token) throw new Error('Not authenticated');
 
-        const res = await fetch(
-            `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-            { headers: { 'Authorization': `Bearer ${token}` } }
-        );
+        const blob = await withRetry(async () => {
+            const res = await fetch(
+                `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+                { headers: { 'Authorization': `Bearer ${token}` } }
+            );
 
-        if (!res.ok) {
-            throw new Error(`Failed to download file: ${res.statusText}`);
-        }
+            if (!res.ok) {
+                throw new Error(`Failed to download file: ${res.status} ${res.statusText}`);
+            }
 
-        // Get response as blob for binary data
-        const blob = await res.blob();
+            return await res.blob();
+        });
 
         // Convert blob to ArrayBuffer for CEP file system
         const arrayBuffer = await blob.arrayBuffer();
