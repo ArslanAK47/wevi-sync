@@ -1,6 +1,6 @@
 {
-    "version": "1.5.3",
-    "releaseDate": "2026-02-27",
-    "changelog": "Fixed Google OAuth credentials",
+    "version": "1.6.0",
+    "releaseDate": "2026-06-05",
+    "changelog": "Auto-relink After Effects footage on pull; same-named projects no longer collide; real team locking + overwrite warnings; clearer push error messages.",
     "downloadUrl": "https://raw.githubusercontent.com/ArslanAK47/wevi-sync/main/dist/premiere-extension"
 }

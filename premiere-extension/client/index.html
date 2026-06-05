@@ -201,6 +201,13 @@
                 <p><strong>Account:</strong> <span id="settings-expires">Google Account</span></p>
             </div>
             <div class="settings-section">
+                <h4>Team Folder</h4>
+                <div class="settings-row">
+                    <span>Shared Drive folder for your team's projects</span>
+                    <button id="btn-change-team-folder" class="btn btn-secondary btn-small" onclick="changeTeamFolder()">Change</button>
+                </div>
+            </div>
+            <div class="settings-section">
                 <h4>Updates</h4>
                 <div class="settings-row">
                     <span>Version: <strong id="settings-version">v1.0.0</strong></span>
@@ -416,14 +423,15 @@
 
     <script src="js/config.js"></script>
     <script src="js/google-config.js"></script>
+    <script src="js/drive-errors.js"></script>
+    <script src="js/project-id.js"></script>
+    <script src="js/drive-paths.js"></script>
     <script src="js/google-drive.js"></script>
     <script src="js/sync.js"></script>
-    <script src="js/test-auth.js"></script>
     <script src="js/upload-helper.js"></script>
     <script src="js/download-helper.js"></script>
     <script src="js/upload-xhr.js"></script>
     <script src="js/update-checker.js"></script>
-    <script src="js/test-suite.js"></script>
     <script src="js/main.js"></script>
 </body>
 

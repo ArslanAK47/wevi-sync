@@ -1,0 +1,9 @@
+# Normalize line endings: store as LF in the repo, check out as-is.
+# Stops the recurring LF<->CRLF "phantom" diffs on CEP source files.
+* text=auto eol=lf
+
+# Binary assets (never normalize)
+*.png binary
+*.zip binary
+*.node binary
+*.map binary

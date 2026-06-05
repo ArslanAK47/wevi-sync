@@ -610,6 +610,9 @@ async function performAutoUpdate() {
         updateProgress(5, 'Fetching file list...');
 
         const urls = getUpdateUrls();
+        // Prefer the downloadUrl published in the remote version.json (single source
+        // of truth) over the hardcoded rawBaseUrl, so the repo location is configurable.
+        const rawBase = (availableUpdate && availableUpdate.downloadUrl) || urls.rawBaseUrl;
         const fileList = await getFileList(urls);
         console.log(`📋 Found ${fileList.length} files to update`);
 
@@ -631,7 +634,7 @@ async function performAutoUpdate() {
                 }
 
                 // Download file
-                const downloadUrl = file.download_url || `${urls.rawBaseUrl}/${relativePath}`;
+                const downloadUrl = file.download_url || `${rawBase}/${relativePath}`;
                 const fileContent = await downloadFileBuffer(downloadUrl);
                 fs.writeFileSync(targetPath, fileContent);
 

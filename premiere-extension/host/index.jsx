@@ -500,6 +500,100 @@ function getAEFootageFiles(aepPath, compNamesJSON) {
 }
 
 /**
+ * Relink footage inside an After Effects project to new local paths (via BridgeTalk),
+ * then save the .aep. Driven on pull from a .aerelink.json manifest.
+ * @param {string} aepPath       Full path to the local .aep
+ * @param {string} mappingJSON   JSON array of { o: oldPath, n: newLocalPath }
+ * @returns {string} JSON { relinked, failed, error }
+ */
+function relinkAeFootage(aepPath, mappingJSON) {
+    try {
+        var maps = JSON.parse(mappingJSON); // [{o,n}]
+
+        // Build the mappings as a JS array literal for the AE side (AE has no JSON).
+        var mapLiteral = '[';
+        for (var i = 0; i < maps.length; i++) {
+            var o = String(maps[i].o).replace(/\\/g, '/').replace(/"/g, '\\"');
+            var n = String(maps[i].n).replace(/\\/g, '/').replace(/"/g, '\\"');
+            if (i > 0) mapLiteral += ',';
+            mapLiteral += '{o:"' + o + '",n:"' + n + '"}';
+        }
+        mapLiteral += ']';
+
+        var aepFwd = aepPath.replace(/\\/g, '/').replace(/"/g, '\\"');
+
+        var aeScript = '';
+        aeScript += 'var relinked=0; var failed=0; var errorMsg="";';
+        aeScript += 'try {';
+        aeScript += 'var aepFile = new File("' + aepFwd + '");';
+        aeScript += 'var alreadyOpen=false;';
+        aeScript += 'if (app.project && app.project.file) {';
+        aeScript += '  var cur=app.project.file.fsName.replace(/\\\\/g,"/").toLowerCase();';
+        aeScript += '  if (cur===aepFile.fsName.replace(/\\\\/g,"/").toLowerCase()) alreadyOpen=true;';
+        aeScript += '}';
+        aeScript += 'if (!alreadyOpen) app.open(aepFile);';
+        aeScript += 'var maps=' + mapLiteral + ';';
+        aeScript += 'function baseName(p){ p=String(p).replace(/\\\\/g,"/"); return p.substring(p.lastIndexOf("/")+1).toLowerCase(); }';
+        aeScript += 'var byFull={}; var byBase={};';
+        aeScript += 'for (var m=0;m<maps.length;m++){ var of=String(maps[m].o).replace(/\\\\/g,"/").toLowerCase(); byFull[of]=maps[m].n; byBase[baseName(maps[m].o)]=maps[m].n; }';
+        aeScript += 'for (var i=1;i<=app.project.numItems;i++){';
+        aeScript += '  var it=app.project.item(i);';
+        aeScript += '  try {';
+        aeScript += '    if (it instanceof FootageItem && it.file){';
+        aeScript += '      var cp=it.file.fsName.replace(/\\\\/g,"/").toLowerCase();';
+        aeScript += '      var target=byFull[cp]; if(!target) target=byBase[baseName(cp)];';
+        aeScript += '      if (target){ var nf=new File(target); if (nf.exists){ it.replace(nf); relinked++; } else { failed++; } }';
+        aeScript += '    }';
+        aeScript += '  } catch(le){ failed++; }';
+        aeScript += '}';
+        aeScript += 'app.project.save();';
+        aeScript += '} catch(e){ errorMsg = e.message || String(e); }';
+        aeScript += 'var resultStr = errorMsg!=="" ? ("ERROR|"+errorMsg) : ("OK|"+relinked+"|"+failed);';
+        aeScript += 'resultStr;';
+
+        // Launch AE if needed (same pattern as getAEFootageFiles)
+        if (!BridgeTalk.isRunning('aftereffects')) {
+            BridgeTalk.launch('aftereffects');
+            var waitCount = 0;
+            while (!BridgeTalk.isRunning('aftereffects') && waitCount < 15) {
+                $.sleep(2000);
+                waitCount++;
+            }
+            if (!BridgeTalk.isRunning('aftereffects')) {
+                return JSON.stringify({ error: 'After Effects could not be launched', relinked: 0, failed: 0 });
+            }
+            $.sleep(3000);
+        }
+
+        var bt = new BridgeTalk();
+        bt.target = 'aftereffects';
+        bt.body = aeScript;
+
+        var btResult = null, btError = null, btDone = false;
+        bt.onResult = function (msg) { btResult = msg.body; btDone = true; };
+        bt.onError = function (msg) { btError = msg.body; btDone = true; };
+        bt.send();
+
+        var elapsed = 0;
+        while (!btDone && elapsed < 120000) { // saving can take a while
+            BridgeTalk.pump();
+            $.sleep(200);
+            elapsed += 200;
+        }
+
+        if (btError) return JSON.stringify({ error: 'AE script error: ' + btError, relinked: 0, failed: 0 });
+        if (!btDone) return JSON.stringify({ error: 'AE did not respond within 120 seconds', relinked: 0, failed: 0 });
+        if (!btResult) return JSON.stringify({ error: 'Empty response from AE', relinked: 0, failed: 0 });
+
+        var parts = String(btResult).split('|');
+        if (parts[0] === 'ERROR') return JSON.stringify({ error: parts[1] || 'Unknown AE error', relinked: 0, failed: 0 });
+        return JSON.stringify({ relinked: parseInt(parts[1], 10) || 0, failed: parseInt(parts[2], 10) || 0, error: null });
+    } catch (e) {
+        return JSON.stringify({ error: e.message, relinked: 0, failed: 0 });
+    }
+}
+
+/**
  * Get all OFFLINE media files in the project
  * Used to match with Drive files for auto-linking
  */

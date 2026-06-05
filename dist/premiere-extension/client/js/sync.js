@@ -6,117 +6,97 @@ const SyncEngine = {
     checkInterval: null,
     lastCheck: null,
 
-    async validateKey(apiKey, serverUrl) {
+    // Activity logging + project registration used to live on the admin server,
+    // which is no longer part of the OAuth-based flow. Kept as no-ops so existing
+    // callers don't error; Drive is now the source of truth.
+    async logActivity(action, projectName = null) {
+        console.log(`(activity) ${action}${projectName ? ': ' + projectName : ''}`);
+        return { success: true };
+    },
+
+    async registerProject(projectName, projectPath, files = []) {
+        // Projects are "registered" simply by being pushed to the Drive team folder.
+        return { success: true };
+    },
+
+    _myEmail() {
+        return (typeof Config !== 'undefined' && Config.data && Config.data.editorEmail) || '';
+    },
+
+    _myName() {
+        return (typeof Config !== 'undefined' && Config.data && (Config.data.editorName || Config.data.editorEmail)) || 'Editor';
+    },
+
+    // Lock a project by writing a .wevisync.lock into its Drive folder.
+    async lockProject(projectName) {
         try {
-            const response = await fetch(`${serverUrl}/api/validate`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ apiKey })
+            const folder = await GoogleDrive.findProjectFolder({ cleanName: projectName });
+            if (!folder) return { success: false, error: 'Project not found on Drive yet — push it first.' };
+
+            const existing = await GoogleDrive.readLock(folder.id);
+            const myEmail = this._myEmail();
+            if (existing && existing.email && existing.email !== myEmail) {
+                return {
+                    success: false,
+                    error: `Locked by ${existing.lockedBy || existing.email}`,
+                    lockedBy: existing.lockedBy,
+                    lockedAt: existing.lockedAt
+                };
+            }
+
+            let host = '';
+            try { host = require('os').hostname(); } catch (e) { }
+            await GoogleDrive.writeLock(folder.id, {
+                lockedBy: this._myName(),
+                email: myEmail,
+                lockedAt: new Date().toISOString(),
+                host: host
             });
-            return await response.json();
+            return { success: true };
         } catch (error) {
-            console.error('Validation error:', error);
-            return { valid: false, error: 'Cannot connect to server' };
+            console.error('Error locking project:', error);
+            return { success: false, error: error.message };
         }
     },
 
+    // Unlock a project (only the owner can release; force-unlock passes force=true).
+    async unlockProject(projectName, force = false) {
+        try {
+            const folder = await GoogleDrive.findProjectFolder({ cleanName: projectName });
+            if (!folder) return { success: true };
+
+            const existing = await GoogleDrive.readLock(folder.id);
+            if (!force && existing && existing.email && existing.email !== this._myEmail()) {
+                return { success: false, error: 'You do not own this lock' };
+            }
+            await GoogleDrive.deleteLock(folder.id);
+            return { success: true };
+        } catch (error) {
+            console.error('Error unlocking project:', error);
+            return { success: false, error: error.message };
+        }
+    },
+
+    // Poll Drive for all current locks and return them in the render shape
+    // ({ locks: [{ project_name, locked_by, ... }] }) the UI already expects.
     async getSyncState() {
         try {
-            const response = await fetch(`${Config.data.serverUrl}/api/sync-state`);
-            return await response.json();
+            const teamFolderId = GoogleDrive.getTeamFolderId();
+            const folders = await GoogleDrive.listProjects(teamFolderId);
+            const byId = {};
+            folders.forEach(f => { byId[f.id] = ProjectId.parseDriveFolderName(f.name).cleanName; });
+            const lockFiles = await GoogleDrive.listLocks(folders.map(f => f.id));
+            const entries = lockFiles.map(lf => ({ cleanName: byId[lf.parentId] || '', lock: lf.lock }));
+            return { locks: ProjectId.locksToRenderShape(entries), recentPushes: [] };
         } catch (error) {
-            console.error('Error fetching sync state:', error);
+            console.error('Error fetching sync state (Drive):', error);
             return null;
         }
     },
 
-    async getAvailableProjects() {
-        try {
-            const response = await fetch(`${Config.data.serverUrl}/api/projects`);
-            return await response.json();
-        } catch (error) {
-            console.error('Error fetching projects:', error);
-            return [];
-        }
-    },
-
-    async logActivity(action, projectName = null) {
-        try {
-            await fetch(`${Config.data.serverUrl}/api/activity`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    apiKey: Config.data.apiKey,
-                    action,
-                    projectName
-                })
-            });
-        } catch (error) {
-            console.error('Error logging activity:', error);
-        }
-    },
-
-    async registerProject(projectName, projectPath, files = []) {
-        try {
-            const response = await fetch(`${Config.data.serverUrl}/api/projects/register`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    apiKey: Config.data.apiKey,
-                    projectName,
-                    projectPath,
-                    files // Array of associated files
-                })
-            });
-            return await response.json();
-        } catch (error) {
-            console.error('Error registering project:', error);
-            return { success: false, error: 'Network error' };
-        }
-    },
-
-    async lockProject(projectName) {
-        try {
-            const response = await fetch(`${Config.data.serverUrl}/api/projects/lock`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    apiKey: Config.data.apiKey,
-                    projectName
-                })
-            });
-            return await response.json();
-        } catch (error) {
-            console.error('Error locking project:', error);
-            return { success: false, error: 'Network error' };
-        }
-    },
-
-    async unlockProject(projectName) {
-        try {
-            const response = await fetch(`${Config.data.serverUrl}/api/projects/unlock`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    apiKey: Config.data.apiKey,
-                    projectName
-                })
-            });
-            return await response.json();
-        } catch (error) {
-            console.error('Error unlocking project:', error);
-            return { success: false, error: 'Network error' };
-        }
-    },
-
     async getLocks() {
-        try {
-            const response = await fetch(`${Config.data.serverUrl}/api/projects/locks`);
-            return await response.json();
-        } catch (error) {
-            console.error('Error fetching locks:', error);
-            return [];
-        }
+        const state = await this.getSyncState();
+        return state ? state.locks : [];
     },
 
     startPeriodicCheck(callback) {
@@ -643,6 +623,43 @@ const FileSystem = {
                 }
             } else {
                 resolve([]);
+            }
+        });
+    },
+
+    // Relink footage inside an After Effects project to new local paths.
+    // mappings: [{ oldPath, newPath }]
+    relinkAeFootage(aepPath, mappings) {
+        return new Promise((resolve) => {
+            if (!this.csInterface) { resolve({ error: 'CSInterface not available', relinked: 0, failed: 0 }); return; }
+            try {
+                const escapedPath = aepPath.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                const mappingJson = JSON.stringify((mappings || []).map(m => ({ o: m.oldPath, n: m.newPath })));
+                const escapedMappings = mappingJson.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                this.csInterface.evalScript(`relinkAeFootage('${escapedPath}', '${escapedMappings}')`, (result) => {
+                    try { resolve(JSON.parse(result)); }
+                    catch (e) { resolve({ error: 'Parse error: ' + (result || 'empty'), relinked: 0, failed: 0 }); }
+                });
+            } catch (e) {
+                resolve({ error: e.message, relinked: 0, failed: 0 });
+            }
+        });
+    },
+
+    // Save the currently open Premiere project (so push never sends a stale .prproj)
+    saveProject() {
+        return new Promise((resolve) => {
+            if (this.csInterface) {
+                try {
+                    this.csInterface.evalScript('saveProject()', (result) => {
+                        try { resolve(JSON.parse(result)); }
+                        catch (e) { resolve({ success: false, error: 'Parse error' }); }
+                    });
+                } catch (e) {
+                    resolve({ success: false, error: e.message });
+                }
+            } else {
+                resolve({ success: false, error: 'CSInterface not available' });
             }
         });
     },

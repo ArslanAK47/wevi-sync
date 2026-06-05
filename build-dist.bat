@@ -19,8 +19,10 @@ xcopy "%SOURCE_DIR%\client" "%DIST_DIR%\premiere-extension\client\" /e /i /q /y 
 xcopy "%SOURCE_DIR%\host" "%DIST_DIR%\premiere-extension\host\" /e /i /q /y >nul
 xcopy "%SOURCE_DIR%\icons" "%DIST_DIR%\premiere-extension\icons\" /e /i /q /y >nul
 
-:: Copy version.json (needed for auto-update version checking)
+:: version.json single source of truth = premiere-extension\version.json
+:: Mirror it to the dist copy (auto-update version check) AND the repo root (remote version check)
 copy "%SOURCE_DIR%\version.json" "%DIST_DIR%\premiere-extension\version.json" /y >nul 2>&1
+copy "%SOURCE_DIR%\version.json" "%~dp0version.json" /y >nul 2>&1
 
 :: Remove dev/debug files from the copy
 if exist "%DIST_DIR%\premiere-extension\.debug" del "%DIST_DIR%\premiere-extension\.debug" >nul 2>&1

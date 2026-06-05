@@ -251,16 +251,20 @@ async function uploadProjectWithConcurrency(projectData, showProgressModal = tru
         }
     }
 
-    // Create project folder ONCE before starting uploads
-    console.log('📁 Creating project folder...');
-    const rootFolderId = GoogleDriveConfig.teamProjectsFolderId;
-    const projectName = projectData.name.replace('.prproj', '');
+    // Create/resolve project folder ONCE before starting uploads.
+    // Namespaced as "<cleanName>__<projectId>" so same-named projects don't collide.
+    console.log('📁 Resolving project folder...');
+    const rootFolderId = GoogleDrive.getTeamFolderId();
+    const cleanName = projectData.cleanName || projectData.name.replace(/\.prproj$/i, '');
+    const projectId = projectData.projectId
+        || ProjectId.generateProjectId(cleanName, {}); // fallback if caller didn't supply one
 
     // Check cancellation
     if (uploadContext.cancelled) return { success: false, cancelled: true };
 
-    const projectFolderId = await GoogleDrive.getOrCreateFolder(projectName, rootFolderId);
-    console.log(`✅ Project folder ready: ${projectFolderId}`);
+    const resolved = await GoogleDrive.resolveProjectFolder({ cleanName: cleanName, projectId: projectId }, rootFolderId);
+    const projectFolderId = resolved.folderId;
+    console.log(`✅ Project folder ready: ${projectFolderId} (${resolved.canonicalName}${resolved.adopted ? ', adopted legacy' : ''})`);
 
     // Share project folder with team (drive.file scope workaround)
     await GoogleDrive.shareWithTeam(projectFolderId);

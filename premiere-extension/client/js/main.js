@@ -161,24 +161,6 @@ function setupEventListeners() {
         btnCancelAuth.addEventListener('click', handleCancelAuth);
     }
 
-    // Test auth button (deprecated, kept for compatibility)
-    const btnTestAuth = document.getElementById('btn-test-auth');
-    if (btnTestAuth) {
-        btnTestAuth.addEventListener('click', async () => {
-            btnTestAuth.disabled = true;
-            btnTestAuth.textContent = 'Running tests...';
-            try {
-                await testServiceAccountAuth();
-                alert('✅ Tests completed! Check console for results.');
-            } catch (e) {
-                alert('❌ Tests failed: ' + e.message);
-            } finally {
-                btnTestAuth.disabled = false;
-                btnTestAuth.textContent = 'Run Diagnostic Test';
-            }
-        });
-    }
-
     // Settings
     elements.btnSettings.addEventListener('click', () => openModal('modal-settings'));
     elements.btnDeactivate.addEventListener('click', handleLogout);
@@ -448,64 +430,85 @@ function handleLogout() {
 }
 
 /* ============================================
-   PROJECT INITIALIZATION
+   SYNC INITIALIZATION
    ============================================ */
 
-async function handleInitializeProject() {
-    if (!currentProject) {
-        alert('No project detected in Premiere.\\n\\nOpen a project first, then click Initialize.');
-        return;
-    }
+/* ---- Team folder (multi-tenant) ---- */
+function parseDriveFolderId(input) {
+    if (!input) return '';
+    const s = String(input).trim();
+    const m = s.match(/\/folders\/([a-zA-Z0-9_-]+)/) || s.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (m) return m[1];
+    if (/^[a-zA-Z0-9_-]{10,}$/.test(s)) return s;
+    return '';
+}
 
-    // Check if already initialized
-    // For now, prompt for confirmation
-    const shouldInit = confirm(
-        `Initialize "${currentProject.name}" for Team Sync?\\n\\n` +
-        `This will:\\n` +
-        `• Create sync files in the project folder\\n` +
-        `• Make the project visible to your team\\n\\n` +
-        `Continue?`
-    );
-
-    if (!shouldInit) return;
-
-    try {
-        // Get the project folder (parent of .prproj file)
-        const projectPath = currentProject.path;
-        const folderPath = FileSystem.getDirname(projectPath);
-
-        // TODO: Convert local path to Google Drive folder ID
-        // For now, we'll use the sync folder
-        if (!Config.data.syncFolder) {
-            alert('Please set a sync folder first (Browse button).');
-            return;
-        }
-
-        // For MVP: copy project to sync folder and initialize there
-        alert(
-            `MVP Mode:\\n\\n` +
-            `1. Copy your project folder to: ${Config.data.syncFolder}\\n` +
-            `2. The extension will track it from there\\n\\n` +
-            `Full Google Drive integration coming soon!`
-        );
-
-    } catch (error) {
-        console.error('Initialize error:', error);
-        alert('Error initializing project: ' + error.message);
+async function ensureTeamFolder() {
+    // Silently default to the bundled shared folder so existing installs keep working
+    // with no prompts. Users can point to their own folder via Settings → Team Folder.
+    if (!Config.data.teamFolderId) {
+        Config.data.teamFolderId = GoogleDriveConfig.teamProjectsFolderId;
+        Config.save();
     }
 }
 
-/* ============================================
-   SYNC INITIALIZATION
-   ============================================ */
+async function changeTeamFolder(skipRefresh) {
+    const input = prompt(
+        'Paste your team\'s Google Drive folder link or ID\n' +
+        '(everyone on the team must use the SAME folder):',
+        Config.data.teamFolderId || ''
+    );
+    if (input === null) return; // cancelled
+    const id = parseDriveFolderId(input);
+    if (!id) { alert('Could not read a Drive folder ID from that input.'); return; }
+    Config.data.teamFolderId = id;
+    Config.save();
+    if (!skipRefresh) {
+        alert('Team folder updated. Refreshing projects...');
+        await refreshTeamProjects();
+    }
+}
+window.changeTeamFolder = changeTeamFolder;
+
+/* ---- Push conflict baselines (per project) ---- */
+const BASELINE_KEY = 'wevisync_baselines';
+function loadBaselines() {
+    try { return JSON.parse(localStorage.getItem(BASELINE_KEY) || '{}'); } catch (e) { return {}; }
+}
+function getBaseline(projectId) {
+    if (!projectId) return null;
+    return loadBaselines()[projectId] || null;
+}
+function saveBaseline(projectId, meta) {
+    if (!projectId || !meta) return;
+    const all = loadBaselines();
+    all[projectId] = { md5: meta.md5 || '', modifiedTime: meta.modifiedTime || '' };
+    try { localStorage.setItem(BASELINE_KEY, JSON.stringify(all)); } catch (e) { }
+}
 
 async function initializeSync() {
     updateConnectionStatus(true);
 
+    // Establish the current user's identity (used for lock ownership + attribution).
+    if (!Config.data.editorEmail) {
+        try {
+            const info = await GoogleDrive.getUserInfo();
+            if (info) {
+                Config.data.editorEmail = info.email || '';
+                if (!Config.data.editorName) Config.data.editorName = info.name || info.email || 'Editor';
+                Config.save();
+                if (elements.editorNameDisplay) elements.editorNameDisplay.textContent = Config.data.editorName;
+            }
+        } catch (e) { console.warn('Could not fetch user identity:', e); }
+    }
+
+    // First run: pick the team's shared Drive folder (falls back to the default).
+    await ensureTeamFolder();
+
     // Load current project from Premiere
     await refreshCurrentProject();
 
-    // Load team projects from server
+    // Load team projects from Drive
     await refreshTeamProjects();
 
     // Start periodic checks
@@ -691,14 +694,20 @@ async function refreshTeamProjects() {
             return;
         }
 
-        const driveProjects = await GoogleDrive.listProjects(GoogleDriveConfig.teamProjectsFolderId);
-        teamProjects = driveProjects.map(p => ({
-            name: p.name,
-            uploaded_by: 'Google Drive',
-            updated_at: p.modifiedTime,
-            path: '',
-            id: p.id
-        }));
+        const driveProjects = await GoogleDrive.listProjects(GoogleDrive.getTeamFolderId());
+        teamProjects = driveProjects.map(p => {
+            const parsed = ProjectId.parseDriveFolderName(p.name);
+            return {
+                name: parsed.cleanName,            // clean display name (used as lock key too)
+                displayName: parsed.cleanName,
+                projectId: parsed.projectId,       // null for un-migrated legacy folders
+                folderName: p.name,                // raw Drive folder name
+                uploaded_by: 'Google Drive',
+                updated_at: p.modifiedTime,
+                path: '',
+                id: p.id                           // Drive folder id (used for pull)
+            };
+        });
         renderTeamProjects();
     } catch (error) {
         console.error('Error refreshing projects:', error);
@@ -823,6 +832,28 @@ async function handlePushCurrent() {
         return;
     }
 
+    // Save the project before scanning so we never push a stale .prproj.
+    try {
+        await FileSystem.saveProject();
+    } catch (e) {
+        console.warn('Could not auto-save before push:', e);
+    }
+
+    // Establish a stable project identity (sidecar next to the .prproj) so this
+    // project always maps to the same Drive folder, even if another project
+    // shares its name.
+    let projectSidecar = null;
+    try {
+        const fs = require('fs');
+        projectSidecar = ProjectId.loadOrCreateSidecar(currentProject.path, fs, {
+            createdBy: (Config.data && Config.data.editorName) || ''
+        });
+        currentProject.projectId = projectSidecar.projectId;
+        currentProject.cleanName = projectSidecar.cleanName;
+    } catch (e) {
+        console.warn('Could not establish project identity:', e);
+    }
+
     try {
         // Get all timeline dependencies (files actually used in the sequence)
         console.log('📦 Scanning timeline files...');
@@ -857,6 +888,28 @@ async function handlePushCurrent() {
             selected: true
         });
         seenPaths.add(currentProject.path);
+
+        // Include the identity sidecar so every teammate resolves the same project ID.
+        try {
+            if (projectSidecar) {
+                const fs = require('fs');
+                if (projectSidecar.created) {
+                    ProjectId.writeSidecar(projectSidecar.sidecarPath, projectSidecar.sidecarObject, fs);
+                }
+                if (fs.existsSync(projectSidecar.sidecarPath) && !seenPaths.has(projectSidecar.sidecarPath)) {
+                    allFiles.push({
+                        name: FileSystem.getBasename(projectSidecar.sidecarPath),
+                        path: projectSidecar.sidecarPath,
+                        type: 'file',
+                        size: fs.statSync(projectSidecar.sidecarPath).size,
+                        selected: true
+                    });
+                    seenPaths.add(projectSidecar.sidecarPath);
+                }
+            }
+        } catch (e) {
+            console.warn('Could not include identity sidecar:', e);
+        }
 
         // Add timeline files
         if (timelineFilesArray && Array.isArray(timelineFilesArray) && timelineFilesArray.length > 0) {
@@ -991,12 +1044,14 @@ async function handlePushCurrent() {
                         else if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'tif', 'psd', 'ai', 'eps', 'tga', 'exr', 'webp', 'svg'].includes(ext)) type = 'image';
 
                         allFiles.push({
-                            name: `[AE] ${footage.name || path.basename(footage.path)}`,
+                            name: footage.name || path.basename(footage.path),
                             path: footage.path,
                             type: type,
                             size: fileSize,
                             selected: true,
-                            isAeFootage: true
+                            isAeFootage: true,
+                            aepPath: aepFile.path,
+                            originalPath: footage.path
                         });
                         seenPaths.add(footage.path);
                         bridgeTalkAdded++;
@@ -1112,12 +1167,14 @@ async function handlePushCurrent() {
 
                             const fileName = path.basename(foundPath);
                             allFiles.push({
-                                name: `[AE] ${fileName}`,
+                                name: fileName,
                                 path: foundPath,
                                 type: type,
                                 size: fileSize,
                                 selected: true,
-                                isAeFootage: true
+                                isAeFootage: true,
+                                aepPath: aepFile.path,
+                                originalPath: foundPath
                             });
                             seenPaths.add(foundPath);
                             console.log(`  ✅ AE footage: ${fileName} (${foundPath})`);
@@ -1128,6 +1185,40 @@ async function handlePushCurrent() {
                 } catch (aeError) {
                     console.error('❌ Error scanning AE project binary:', aeError);
                 }
+            }
+
+            // Build a relink manifest per .aep so footage auto-relinks in After
+            // Effects on pull (maps each footage's original path -> Drive path).
+            try {
+                const fsMod = require('fs');
+                const aeFootageByAep = {};
+                for (const f of allFiles) {
+                    if (f.isAeFootage && f.aepPath) {
+                        (aeFootageByAep[f.aepPath] = aeFootageByAep[f.aepPath] || []).push(f);
+                    }
+                }
+                const projectRoot = FileSystem.getDirname(currentProject.path);
+                for (const aepPath of Object.keys(aeFootageByAep)) {
+                    const manifest = DrivePaths.buildAeRelinkManifest(
+                        { path: aepPath, name: FileSystem.getBasename(aepPath) },
+                        aeFootageByAep[aepPath].map(f => ({ path: f.originalPath || f.path, name: FileSystem.getBasename(f.path) })),
+                        projectRoot, projectRoot);
+                    const manifestPath = aepPath.replace(/\.aep$/i, '') + '.aerelink.json';
+                    fsMod.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+                    if (!seenPaths.has(manifestPath)) {
+                        allFiles.push({
+                            name: FileSystem.getBasename(manifestPath),
+                            path: manifestPath,
+                            type: 'file',
+                            size: fsMod.statSync(manifestPath).size,
+                            selected: true
+                        });
+                        seenPaths.add(manifestPath);
+                    }
+                    console.log(`📝 Wrote AE relink manifest: ${manifestPath} (${manifest.footage.length} footage)`);
+                }
+            } catch (manifestErr) {
+                console.warn('Could not build AE relink manifest:', manifestErr);
             }
 
             btn.innerHTML = originalBtnText;
@@ -1229,7 +1320,10 @@ function showUploadReportModal(result) {
     const cancelled = result.cancelledCount || 0;
     const remaining = Math.max(0, selected - (uploaded + skipped + failed + cancelled));
 
-    summaryEl.innerHTML = `
+    const failureBanner = failed > 0
+        ? `<div class="upload-report-banner" style="grid-column:1/-1;background:#4a2d2d;color:#ff8a8a;padding:8px 12px;border-radius:6px;margin-bottom:8px;font-size:12px;">⚠️ ${failed} file(s) failed to upload — see the reason on each row below. The rest uploaded fine.</div>`
+        : '';
+    summaryEl.innerHTML = failureBanner + `
         <div class="upload-report-stat"><strong>${selected}</strong>Selected</div>
         <div class="upload-report-stat"><strong>${uploaded}</strong>Uploaded</div>
         <div class="upload-report-stat"><strong>${skipped}</strong>Skipped</div>
@@ -1246,7 +1340,13 @@ function showUploadReportModal(result) {
             const status = (entry.status || 'uploaded').toLowerCase();
             const statusLabel = status.toUpperCase();
             const name = escapeReportText(entry.drivePath || entry.name || 'Unknown file');
-            const reason = escapeReportText(entry.reason || '');
+            // Never render a blank reason — fall back to a meaningful label per status.
+            const fallbackReason = status === 'failed'
+                ? 'Failed — open the Debug Console for the full error'
+                : status === 'uploaded' ? 'Uploaded successfully'
+                : status === 'skipped' ? 'Unchanged (skipped)'
+                : status === 'cancelled' ? 'Cancelled' : statusLabel;
+            const reason = escapeReportText(entry.reason || fallbackReason);
             return `
                 <div class="upload-report-row">
                     <div class="upload-report-status ${status}">${statusLabel}</div>
@@ -1286,22 +1386,69 @@ async function handlePushSelectedFiles() {
         const projectData = {
             name: currentProject.name,
             path: currentProject.path,
+            projectId: currentProject.projectId,
+            cleanName: currentProject.cleanName || (currentProject.name || '').replace(/\.prproj$/i, ''),
             mediaFiles: selectedFiles.filter(f => f.type !== 'project') // Exclude .prproj from mediaFiles list
         };
+
+        // Conflict guard: warn before overwriting a teammate's newer version.
+        try {
+            const existingFolder = await GoogleDrive.findProjectFolder({
+                cleanName: projectData.cleanName, projectId: projectData.projectId
+            });
+            if (existingFolder) {
+                const remoteMeta = await GoogleDrive.getProjectPrprojMeta(existingFolder.id, currentProject.name);
+                const conflict = ProjectId.detectConflict(getBaseline(projectData.projectId), remoteMeta);
+                if (conflict.conflict) {
+                    const proceed = confirm(
+                        `"${projectData.cleanName}" was updated by ${conflict.who}` +
+                        (conflict.when ? ` on ${formatDate(conflict.when)}` : '') + `.\n\n` +
+                        `OK = overwrite their version\n` +
+                        `Cancel = stop (pull theirs first)`
+                    );
+                    if (!proceed) {
+                        isPushing = false;
+                        btn.disabled = false;
+                        btn.innerHTML = originalText;
+                        btn.classList.remove('disabled-look');
+                        return;
+                    }
+                }
+            }
+        } catch (conflictErr) {
+            console.warn('Conflict check failed (continuing):', conflictErr);
+        }
 
         const result = await uploadProjectWithConcurrency(projectData, true);
 
         if (result.success) {
-            console.log(`✅ Upload complete! ${result.uploadedCount} uploaded, ${result.skippedCount} skipped, ${result.failedCount} failed.`);
-            btn.innerHTML = '✅ Complete!';
+            const failed = result.failedCount || 0;
+            console.log(`✅ Upload finished! ${result.uploadedCount} uploaded, ${result.skippedCount} skipped, ${failed} failed.`);
+            btn.innerHTML = failed > 0 ? `⚠️ ${failed} failed` : '✅ Complete!';
             setTimeout(() => {
                 btn.disabled = false;
                 btn.innerHTML = originalText;
-            }, 2000);
+            }, 2500);
+            // Report modal stays open so the user can read per-file failure reasons.
             showUploadReportModal(result);
             await refreshTeamProjects();
+
+            // Record the new sync baseline so future pushes can detect conflicts.
+            try {
+                const folder = await GoogleDrive.findProjectFolder({
+                    cleanName: projectData.cleanName, projectId: projectData.projectId
+                });
+                if (folder) {
+                    const meta = await GoogleDrive.getProjectPrprojMeta(folder.id, currentProject.name);
+                    saveBaseline(projectData.projectId, meta);
+                }
+            } catch (e) { /* non-fatal */ }
+        } else if (result.cancelled) {
+            console.log('Upload cancelled by user.');
+            btn.disabled = false;
+            btn.innerHTML = originalText;
         } else {
-            alert(`❌ Error: ${result.error}`);
+            alert(`❌ Push failed: ${result.error || 'Unknown error — check the Debug Console for details.'}`);
             btn.disabled = false;
             btn.innerHTML = originalText;
         }
@@ -1315,139 +1462,6 @@ async function handlePushSelectedFiles() {
         btn.classList.remove('disabled-look');
         btn.style.cursor = '';
         pendingFilesToPush = [];
-    }
-}
-
-/**
- * Handle pulling a project from Drive
- */
-async function handlePullProjectOld(projectId, projectName) {
-    console.log(`📥 Pull requested: ${projectName} (ID: ${projectId})`);
-
-    // Check if sync folder is configured
-    if (!Config.data.syncFolder) {
-        alert('Please configure a sync folder first!\n\nGo to Settings and set your local sync folder.');
-        return;
-    }
-
-    // Smart path detection: Check if this is the CURRENT project
-    let targetFolder = Config.data.syncFolder;
-    let projectPath = `${targetFolder}\\${projectName}`;
-    let updateInPlace = false;
-
-    if (currentProject && currentProject.name === `${projectName}.prproj`) {
-        // User is pulling the SAME project they have open
-        // Update in the current project's folder instead of creating subdirectory
-        const currentDir = currentProject.path.substring(0, currentProject.path.lastIndexOf('\\'));
-        console.log(`Current project directory: ${currentDir}`);
-        console.log(`Sync folder: ${targetFolder}`);
-
-        // Check if we're already in the sync folder (or a subdirectory of it)
-        if (currentDir.toLowerCase().startsWith(targetFolder.toLowerCase())) {
-            targetFolder = currentDir;
-            projectPath = currentDir;
-            updateInPlace = true;
-            console.log(`✓ Updating current project in-place: ${projectPath}`);
-        }
-    }
-
-    // Confirm pull
-    const confirmMsg = updateInPlace
-        ? `Update current project "${projectName}" from Drive?\n\nFiles will be synced in current location:\n${projectPath}`
-        : `Pull "${projectName}" from Drive?\n\nFiles will be downloaded to:\n${projectPath}`;
-
-    const confirm = window.confirm(confirmMsg);
-    if (!confirm) return;
-
-    try {
-        // Call download helper with smart target folder
-        const result = await downloadProjectWithProgress(
-            projectName,
-            projectId,
-            updateInPlace ? targetFolder : Config.data.syncFolder,
-            true, // Show progress modal
-            updateInPlace // Pass flag to skip subdirectory creation
-        );
-
-        if (result.success) {
-            let message = `✅ Download Complete!\n\n`;
-            message += `Downloaded: ${result.downloadedCount} file(s)\n`;
-            if (result.skippedCount > 0) {
-                message += `Skipped: ${result.skippedCount} (unchanged)\n`;
-            }
-
-            // Handle conflicts - ask user what to do
-            if (result.conflicts && result.conflicts.length > 0) {
-                message += `\n⚠️ ${result.conflicts.length} file(s) have conflicts (different sizes):\n`;
-                result.conflicts.forEach(c => {
-                    message += `  - ${c.name}\n`;
-                });
-                message += `\nThese files were NOT downloaded yet.`;
-
-                alert(message);
-
-                // Ask if user wants to overwrite with Drive versions
-                const overwrite = window.confirm(
-                    `Do you want to UPDATE local files with Drive versions?\n\n` +
-                    `⚠️ This will overwrite your local copies!\n\n` +
-                    `Conflicted files:\n${result.conflicts.map(c => `  - ${c.name}`).join('\n')}\n\n` +
-                    `OK = Use Drive version\nCancel = Keep local version`
-                );
-
-                if (overwrite) {
-                    // Download conflicted files
-                    let overwriteCount = 0;
-                    for (const conflict of result.conflicts) {
-                        try {
-                            console.log(`Downloading conflict: ${conflict.name}`);
-                            const fileContent = await GoogleDrive.downloadFile(conflict.driveFile.id);
-
-                            // Convert to Base64
-                            let binary = '';
-                            const len = fileContent.byteLength;
-                            for (let i = 0; i < len; i++) {
-                                binary += String.fromCharCode(fileContent[i]);
-                            }
-                            const base64Content = btoa(binary);
-
-                            // Write file
-                            const writeResult = cep.fs.writeFile(conflict.localPath, base64Content, cep.encoding.Base64);
-                            if (writeResult.err === 0) {
-                                console.log(`✅ Overwritten: ${conflict.name}`);
-                                overwriteCount++;
-                            } else {
-                                console.error(`❌ Failed to write: ${conflict.name}`);
-                            }
-                        } catch (error) {
-                            console.error(`Error downloading ${conflict.name}:`, error);
-                        }
-                    }
-
-                    alert(`✅ Updated ${overwriteCount} file(s) from Drive!`);
-                } else {
-                    alert(`Kept local versions of ${result.conflicts.length} file(s).`);
-                }
-
-                // Skip the rest, already handled
-                return;
-            }
-
-            message += `\n\nLocation:\n${result.projectPath}`;
-
-            alert(message);
-
-            // Ask if user wants to open the project
-            const openNow = window.confirm(`Open "${projectName}" in Premiere now?`);
-            if (openNow) {
-                const prprojPath = `${result.projectPath}\\${projectName}.prproj`;
-                await FileSystem.openProject(prprojPath);
-            }
-        } else {
-            alert(`❌ Download Failed!\n\n${result.error}`);
-        }
-    } catch (error) {
-        console.error('Pull error:', error);
-        alert(`❌ Error: ${error.message}`);
     }
 }
 
@@ -1937,6 +1951,30 @@ async function handlePullAll() {
         } else {
             if (statusEl) statusEl.textContent = `Done! ${skipped} files already synced.`;
         }
+
+        // Update the conflict baseline from the pulled .prproj metadata so a later
+        // teammate change is detected on our next push.
+        try {
+            const fsx = require('fs');
+            const pathx = require('path');
+            const prprojDrive = files.find(f => /\.prproj$/i.test(f.name));
+            let projId = null;
+            for (const e of fsx.readdirSync(targetFolder)) {
+                if (/\.wevisync\.json$/i.test(e)) {
+                    try { projId = JSON.parse(fsx.readFileSync(pathx.join(targetFolder, e), 'utf8')).projectId; } catch (_) { }
+                }
+            }
+            if (projId && prprojDrive) {
+                saveBaseline(projId, { md5: prprojDrive.md5Checksum, modifiedTime: prprojDrive.modifiedTime });
+            }
+        } catch (e) { /* non-fatal */ }
+
+        // Auto-relink After Effects footage for any pulled .aep projects.
+        try {
+            await relinkAeProjectsAfterPull(targetFolder);
+        } catch (aeErr) {
+            console.warn('AE relink step failed (non-fatal):', aeErr);
+        }
     }
 
     isPulling = false;
@@ -1954,6 +1992,78 @@ async function handlePullAll() {
 }
 
 window.handlePullAll = handlePullAll;
+
+/**
+ * After a pull, find any *.aerelink.json manifests under the target folder and
+ * drive After Effects (via BridgeTalk) to relink each .aep's footage to the new
+ * local paths, then save the .aep. Gracefully skips when there are no manifests
+ * (legacy projects) or After Effects isn't available.
+ */
+async function relinkAeProjectsAfterPull(targetFolder) {
+    let fs, path;
+    try { fs = require('fs'); path = require('path'); } catch (e) { return; }
+    if (!targetFolder || !fs.existsSync(targetFolder)) return;
+
+    const manifests = [];
+    const downloadedRel = [];
+    (function walk(dir, relBase) {
+        let entries = [];
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+        for (const entry of entries) {
+            const full = path.join(dir, entry.name);
+            const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) {
+                walk(full, rel);
+            } else {
+                downloadedRel.push(rel);
+                if (/\.aerelink\.json$/i.test(entry.name)) manifests.push(full);
+            }
+        }
+    })(targetFolder, '');
+
+    if (manifests.length === 0) {
+        console.log('ℹ️ No AE relink manifests found; skipping AE relink.');
+        return;
+    }
+
+    const statusEl = document.getElementById('explorer-status');
+    const notify = (msg) => { try { if (typeof showNotification === 'function') showNotification(msg, 'info'); } catch (e) { } console.log(msg); };
+
+    for (const manifestPath of manifests) {
+        let manifest;
+        try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); }
+        catch (e) { console.warn('Bad AE manifest:', manifestPath); continue; }
+
+        const aepLocal = manifestPath.replace(/\.aerelink\.json$/i, '.aep');
+        if (!fs.existsSync(aepLocal)) {
+            console.warn('AE .aep not found for manifest (skipping):', aepLocal);
+            continue;
+        }
+
+        const mappings = DrivePaths.resolveRelinkMappings(manifest, targetFolder, downloadedRel)
+            .filter(m => { try { return fs.existsSync(m.newPath); } catch (e) { return false; } });
+
+        if (mappings.length === 0) {
+            console.warn('No resolvable AE footage for', aepLocal);
+            continue;
+        }
+
+        if (statusEl) statusEl.textContent = `🎬 Relinking After Effects footage (${path.basename(aepLocal)})...`;
+        try {
+            const result = await FileSystem.relinkAeFootage(aepLocal, mappings);
+            if (result && result.error) {
+                console.warn('AE relink reported:', result.error);
+                notify(`AE footage downloaded — open ${path.basename(aepLocal)} in After Effects to relink. (${result.error})`);
+            } else {
+                console.log(`✅ AE relink: ${result.relinked} relinked, ${result.failed} failed (${path.basename(aepLocal)})`);
+                if (statusEl) statusEl.textContent = `✅ Relinked ${result.relinked} AE footage item(s) in ${path.basename(aepLocal)}.`;
+            }
+        } catch (e) {
+            console.warn('AE relink failed:', e);
+            notify(`AE footage downloaded — open ${path.basename(aepLocal)} in After Effects to relink.`);
+        }
+    }
+}
 
 /**
  * Reopen the explorer modal from the floating download indicator
@@ -2089,50 +2199,49 @@ async function handleSingleFilePull(fileId, fileName, targetFolder, linkNodeId) 
                 const xmlBuffer = zlib.gunzipSync(prprojBuffer);
                 let xmlString = xmlBuffer.toString('utf8');
 
-                // Build a map of available files in the target folder (recursive)
-                const availableFiles = {};
-                function scanFolder(dir) {
+                // Collect downloaded files as relative paths under targetFolder so we
+                // can match by RELATIVE PATH (not just basename). This prevents two
+                // different files that share a basename (e.g. a/intro.mp4 and b/intro.mp4)
+                // from relinking to the wrong one.
+                const downloadedRel = [];
+                function scanFolder(dir, relBase) {
                     try {
                         const entries = fs.readdirSync(dir, { withFileTypes: true });
                         for (const entry of entries) {
                             const fullPath = path.join(dir, entry.name);
+                            const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
                             if (entry.isFile()) {
-                                // Map by lowercase filename for matching
-                                availableFiles[entry.name.toLowerCase()] = fullPath;
+                                downloadedRel.push(rel);
                             } else if (entry.isDirectory()) {
-                                scanFolder(fullPath); // Recurse into subfolders
+                                scanFolder(fullPath, rel);
                             }
                         }
                     } catch (e) {
                         console.warn('Could not scan folder:', dir, e.message);
                     }
                 }
-                scanFolder(targetFolder);
+                scanFolder(targetFolder, '');
 
-                console.log('📁 Available files in target folder:', Object.keys(availableFiles));
+                const relinkIndex = DrivePaths.buildRelinkIndex(downloadedRel);
+                console.log(`📁 ${downloadedRel.length} file(s) available in target folder for relink`);
 
-                // Find and replace file paths in the XML
-                // Premiere stores paths in XML like: <ActualMediaFilePath>C:\original\path\file.ext</ActualMediaFilePath>
-                // Also in attributes and other elements
+                // Find and replace file paths in the XML.
+                // Premiere stores paths like: <ActualMediaFilePath>C:\original\path\file.ext</ActualMediaFilePath>
                 let patchCount = 0;
-
-                // Pattern: match Windows absolute paths (drive letter paths)
-                // This regex finds paths like C:\folder\subfolder\file.ext
                 const pathPattern = /([A-Z]:\\(?:[^<>"*?|\r\n]+\\)*([^<>"*?|\\\r\n]+\.[a-zA-Z0-9]{2,6}))/gi;
 
                 xmlString = xmlString.replace(pathPattern, (fullMatch, fullPath, basename) => {
-                    const lowerBasename = basename.toLowerCase();
-
-                    // Check if we have this file in our download folder
-                    if (availableFiles[lowerBasename]) {
-                        const newPath = availableFiles[lowerBasename];
+                    // Choose the downloaded file whose relative path best matches the
+                    // original path; returns null when missing or ambiguous.
+                    const chosenRel = DrivePaths.chooseRelinkTarget(fullPath, relinkIndex);
+                    if (chosenRel) {
+                        const newPath = path.join(targetFolder, chosenRel.replace(/\//g, '\\'));
                         if (newPath.toLowerCase() !== fullPath.toLowerCase()) {
                             patchCount++;
                             console.log(`  🔗 ${basename}: ${fullPath} → ${newPath}`);
                             return newPath;
                         }
                     }
-
                     return fullMatch; // No change
                 });
 

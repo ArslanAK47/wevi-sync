@@ -22,6 +22,19 @@ async function withRetry(fn, maxRetries = 3) {
     }
 }
 
+// Always-non-empty, actionable Drive error message (uses DriveErrors when loaded).
+function driveErrorMessage(status, statusText, body, context) {
+    if (typeof DriveErrors !== 'undefined' && DriveErrors.describeDriveError) {
+        return DriveErrors.describeDriveError(status, statusText, body, context);
+    }
+    return `${context} failed: HTTP ${status || 0} ${statusText || ''} ${body || ''}`.trim();
+}
+
+// Escape a value for safe interpolation into a Drive `q=` query string literal.
+function driveQ(value) {
+    return String(value == null ? '' : value).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
 const GoogleDrive = {
     accessToken: null,
     refreshToken: null,
@@ -354,9 +367,9 @@ const GoogleDrive = {
         if (!token) throw new Error('Not authenticated');
 
         // Search for existing folder
-        let query = `mimeType='application/vnd.google-apps.folder' and name='${folderName}' and trashed=false`;
+        let query = `mimeType='application/vnd.google-apps.folder' and name='${driveQ(folderName)}' and trashed=false`;
         if (parentId) {
-            query += ` and '${parentId}' in parents`;
+            query += ` and '${driveQ(parentId)}' in parents`;
         }
 
         console.log(`🔍 Searching for folder "${folderName}" in parent: ${parentId || 'root'}`);
@@ -369,7 +382,7 @@ const GoogleDrive = {
         if (!searchRes.ok) {
             const errorText = await searchRes.text();
             console.error('❌ Folder search failed:', searchRes.status, errorText);
-            throw new Error(`Folder search failed: ${searchRes.status} - ${errorText}`);
+            throw new Error(driveErrorMessage(searchRes.status, searchRes.statusText, errorText, `Searching for folder "${folderName}"`));
         }
 
         const searchData = await searchRes.json();
@@ -407,7 +420,7 @@ const GoogleDrive = {
         if (!createRes.ok) {
             const errorText = await createRes.text();
             console.error('❌ Folder creation failed:', createRes.status, errorText);
-            throw new Error(`Folder creation failed: ${createRes.status} - ${errorText}`);
+            throw new Error(driveErrorMessage(createRes.status, createRes.statusText, errorText, `Creating folder "${folderName}"`));
         }
 
         const createData = await createRes.json();
@@ -437,7 +450,7 @@ const GoogleDrive = {
             if (!res.ok) {
                 const errorText = await res.text();
                 console.error(`❌ List projects failed: ${res.status}`, errorText);
-                throw new Error(`Failed to list projects: ${res.status}`);
+                throw new Error(driveErrorMessage(res.status, res.statusText, errorText, 'Listing team projects'));
             }
 
             return await res.json();
@@ -445,6 +458,194 @@ const GoogleDrive = {
 
         console.log(`📂 Found ${data.files?.length || 0} projects:`, data.files?.map(f => f.name));
         return data.files || [];
+    },
+
+    /**
+     * The team's shared "Projects" folder id. Configurable per install
+     * (Config.data.teamFolderId), falling back to the hardcoded default so
+     * existing installs keep working.
+     */
+    getTeamFolderId() {
+        try {
+            if (typeof Config !== 'undefined' && Config.data && Config.data.teamFolderId) {
+                return Config.data.teamFolderId;
+            }
+        } catch (e) { /* ignore */ }
+        return GoogleDriveConfig.teamProjectsFolderId;
+    },
+
+    /**
+     * Rename a Drive file/folder.
+     */
+    async renameFile(fileId, newName) {
+        const token = await this.getValidToken();
+        if (!token) throw new Error('Not authenticated');
+        const res = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true&fields=id,name`,
+            {
+                method: 'PATCH',
+                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: newName })
+            }
+        );
+        if (!res.ok) {
+            const t = await res.text();
+            throw new Error(driveErrorMessage(res.status, res.statusText, t, `Renaming to "${newName}"`));
+        }
+        return await res.json();
+    },
+
+    /**
+     * Resolve (and if needed create/adopt) the top-level Drive folder for a
+     * project, namespaced as "<cleanName>__<projectId>" so two same-named
+     * projects never collide. Adopts a legacy plain-name folder by renaming it.
+     * @param {{cleanName:string,projectId:string}} opts
+     * @returns {{folderId:string, canonicalName:string, adopted:boolean}}
+     */
+    async resolveProjectFolder(opts, parentId) {
+        const children = await this.listProjects(parentId);
+        const decision = ProjectId.decideProjectFolderAction(
+            children.map(c => ({ id: c.id, name: c.name })), opts.cleanName, opts.projectId);
+
+        if (decision.action === 'exact' || decision.action === 'byId') {
+            return { folderId: decision.id, canonicalName: decision.name, adopted: false };
+        }
+        if (decision.action === 'adopt') {
+            try {
+                await this.renameFile(decision.id, decision.name);
+                console.log(`🔁 Adopted legacy folder "${opts.cleanName}" → "${decision.name}"`);
+                return { folderId: decision.id, canonicalName: decision.name, adopted: true };
+            } catch (e) {
+                console.warn('Could not rename legacy folder, using it as-is:', e.message);
+                return { folderId: decision.id, canonicalName: opts.cleanName, adopted: false };
+            }
+        }
+        const folderId = await this.getOrCreateFolder(decision.name, parentId);
+        return { folderId: folderId, canonicalName: decision.name, adopted: false };
+    },
+
+    /**
+     * Current Drive user (works with the drive scope via the about endpoint).
+     * @returns {{email:string,name:string}|null}
+     */
+    async getUserInfo() {
+        const token = await this.getValidToken();
+        if (!token) return null;
+        try {
+            const res = await fetch('https://www.googleapis.com/drive/v3/about?fields=user', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (!res.ok) return null;
+            const data = await res.json();
+            return data.user ? { email: data.user.emailAddress || '', name: data.user.displayName || '' } : null;
+        } catch (e) {
+            console.warn('getUserInfo failed:', e.message);
+            return null;
+        }
+    },
+
+    /**
+     * Find a project folder under the team folder by projectId (preferred) or clean name.
+     * @param {{cleanName?:string, projectId?:string}} opts
+     */
+    async findProjectFolder(opts) {
+        const folders = await this.listProjects(this.getTeamFolderId());
+        if (opts.projectId) {
+            for (const f of folders) {
+                const p = ProjectId.parseDriveFolderName(f.name);
+                if (p.projectId && p.projectId === String(opts.projectId).toLowerCase()) return { id: f.id, name: f.name };
+            }
+        }
+        if (opts.cleanName) {
+            for (const f of folders) {
+                if (ProjectId.parseDriveFolderName(f.name).cleanName === opts.cleanName) return { id: f.id, name: f.name };
+            }
+        }
+        return null;
+    },
+
+    /**
+     * Metadata for a project's .prproj on Drive (for conflict detection).
+     */
+    async getProjectPrprojMeta(folderId, prprojName) {
+        const token = await this.getValidToken();
+        const q = `name='${driveQ(prprojName)}' and '${driveQ(folderId)}' in parents and trashed=false`;
+        const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,md5Checksum,modifiedTime,lastModifyingUser(displayName,emailAddress))&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+        const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!res.ok) return null;
+        const data = await res.json();
+        const f = data.files && data.files[0];
+        if (!f) return null;
+        return { md5: f.md5Checksum, modifiedTime: f.modifiedTime, lastModifyingUser: f.lastModifyingUser };
+    },
+
+    // =============================================
+    // PROJECT LOCKS (Drive-based — replaces the old admin server)
+    // =============================================
+    LOCK_FILE_NAME: '.wevisync.lock',
+
+    async findLockFile(projectFolderId) {
+        const token = await this.getValidToken();
+        const q = `name='${driveQ(this.LOCK_FILE_NAME)}' and '${driveQ(projectFolderId)}' in parents and trashed=false`;
+        const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+        const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return (data.files && data.files[0]) || null;
+    },
+
+    async readLock(projectFolderId) {
+        const f = await this.findLockFile(projectFolderId);
+        if (!f) return null;
+        const token = await this.getValidToken();
+        try {
+            const res = await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media&supportsAllDrives=true`,
+                { headers: { 'Authorization': `Bearer ${token}` } });
+            if (!res.ok) return null;
+            const obj = JSON.parse(await res.text());
+            obj._fileId = f.id;
+            return obj;
+        } catch (e) { return null; }
+    },
+
+    async writeLock(projectFolderId, lockObj) {
+        // uploadFileWithProgress handles create-or-update by name within the folder.
+        return await uploadFileWithProgress(this.LOCK_FILE_NAME, JSON.stringify(lockObj, null, 2), 'application/json', projectFolderId);
+    },
+
+    async deleteLock(projectFolderId) {
+        const f = await this.findLockFile(projectFolderId);
+        if (!f) return;
+        const token = await this.getValidToken();
+        await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}?supportsAllDrives=true`,
+            { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
+    },
+
+    /**
+     * One-query lock listing across many project folders, then download each lock's
+     * content. Returns [{ parentId, lock }]. Only active locks are downloaded.
+     */
+    async listLocks(folderIds) {
+        if (!folderIds || folderIds.length === 0) return [];
+        const token = await this.getValidToken();
+        const parentClause = folderIds.map(id => `'${driveQ(id)}' in parents`).join(' or ');
+        const q = `name='${driveQ(this.LOCK_FILE_NAME)}' and trashed=false and (${parentClause})`;
+        const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,parents)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+        const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!res.ok) return [];
+        const data = await res.json();
+        const results = [];
+        for (const f of (data.files || [])) {
+            try {
+                const cres = await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media&supportsAllDrives=true`,
+                    { headers: { 'Authorization': `Bearer ${token}` } });
+                if (!cres.ok) continue;
+                const obj = JSON.parse(await cres.text());
+                obj._fileId = f.id;
+                results.push({ parentId: (f.parents && f.parents[0]) || null, lock: obj });
+            } catch (e) { /* skip unreadable lock */ }
+        }
+        return results;
     },
 
     // =============================================
@@ -551,7 +752,7 @@ const GoogleDrive = {
 
                     if (!res.ok) {
                         const errorText = await res.text();
-                        throw new Error(`Failed to list files in folder: ${res.status} ${errorText}`);
+                        throw new Error(driveErrorMessage(res.status, res.statusText, errorText, 'Listing project files'));
                     }
 
                     return await res.json();

@@ -16,6 +16,19 @@ function createUploadError(message, status = null, retriable = false, retryAfter
     return err;
 }
 
+// Build an upload error with an always-non-empty, actionable message.
+// Uses DriveErrors.describeDriveError (loaded globally in the panel) and falls
+// back to a plain string when it isn't available (e.g. outside the panel).
+function driveUploadError(status, statusText, body, context, retriable, retryAfterMs) {
+    let message;
+    if (typeof DriveErrors !== 'undefined' && DriveErrors.describeDriveError) {
+        message = DriveErrors.describeDriveError(status, statusText, body, context);
+    } else {
+        message = `${context} failed: HTTP ${status || 0} ${statusText || ''} ${body || ''}`.trim();
+    }
+    return createUploadError(message, status, retriable, retryAfterMs);
+}
+
 function getRetryAfterMs(xhrOrRes) {
     try {
         const retryAfter = xhrOrRes?.getResponseHeader
@@ -105,7 +118,8 @@ async function computeLocalMd5(fileInput) {
 }
 
 async function findExistingDriveFile(fileName, folderId, token) {
-    const query = `name='${fileName.replace(/'/g, "\\'")}' and '${folderId}' in parents and trashed=false`;
+    const safeName = String(fileName).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const query = `name='${safeName}' and '${folderId}' in parents and trashed=false`;
     const searchRes = await fetch(
         `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,size,md5Checksum,modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
         { headers: { Authorization: `Bearer ${token}` } }
@@ -113,7 +127,7 @@ async function findExistingDriveFile(fileName, folderId, token) {
 
     if (!searchRes.ok) {
         const errorText = await searchRes.text();
-        throw createUploadError(`Failed to search existing file: ${searchRes.status} ${errorText}`, searchRes.status, shouldRetryStatus(searchRes.status), getRetryAfterMs(searchRes));
+        throw driveUploadError(searchRes.status, searchRes.statusText, errorText, `Checking Drive for "${fileName}"`, shouldRetryStatus(searchRes.status), getRetryAfterMs(searchRes));
     }
 
     const searchData = await searchRes.json();
@@ -140,7 +154,7 @@ async function ensureDriveFileMetadata(fileName, folderId, token, existingId) {
 
     if (!createRes.ok) {
         const errorText = await createRes.text();
-        throw createUploadError(`Failed to create file metadata: ${createRes.status} ${errorText}`, createRes.status, shouldRetryStatus(createRes.status), getRetryAfterMs(createRes));
+        throw driveUploadError(createRes.status, createRes.statusText, errorText, `Creating "${fileName}" on Drive`, shouldRetryStatus(createRes.status), getRetryAfterMs(createRes));
     }
 
     const createData = await createRes.json();
@@ -182,16 +196,18 @@ async function simpleUploadAttempt(fileName, content, mimeType, fileId, token, o
                 }
                 return;
             }
-            reject(createUploadError(
-                `Upload failed: ${xhr.status} ${xhr.statusText}`,
+            reject(driveUploadError(
                 xhr.status,
+                xhr.statusText,
+                xhr.responseText,
+                `Uploading "${fileName}"`,
                 shouldRetryStatus(xhr.status),
                 getRetryAfterMs(xhr)
             ));
         });
 
         xhr.addEventListener('error', () => {
-            reject(createUploadError(`Network error uploading ${fileName}`, null, true));
+            reject(driveUploadError(0, '', '', `Uploading "${fileName}"`, true));
         });
 
         xhr.addEventListener('abort', () => {
@@ -223,7 +239,7 @@ async function createResumableSession(fileName, mimeType, fileId, totalSize, tok
 
     if (!startRes.ok) {
         const errorText = await startRes.text();
-        throw createUploadError(`Failed to start resumable upload: ${startRes.status} ${errorText}`, startRes.status, shouldRetryStatus(startRes.status), getRetryAfterMs(startRes));
+        throw driveUploadError(startRes.status, startRes.statusText, errorText, `Starting upload of "${fileName}"`, shouldRetryStatus(startRes.status), getRetryAfterMs(startRes));
     }
 
     const sessionUrl = startRes.headers.get('Location');
@@ -270,16 +286,18 @@ async function putResumableChunk(sessionUrl, chunkBuffer, start, end, total, com
                 });
                 return;
             }
-            reject(createUploadError(
-                `Chunk upload failed: ${xhr.status} ${xhr.statusText}`,
+            reject(driveUploadError(
                 xhr.status,
+                xhr.statusText,
+                xhr.responseText,
+                'Uploading file chunk',
                 shouldRetryStatus(xhr.status),
                 getRetryAfterMs(xhr)
             ));
         });
 
         xhr.addEventListener('error', () => {
-            reject(createUploadError('Network error during chunk upload', null, true));
+            reject(driveUploadError(0, '', '', 'Uploading file chunk', true));
         });
 
         xhr.addEventListener('abort', () => {

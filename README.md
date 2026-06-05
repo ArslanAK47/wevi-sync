@@ -157,6 +157,18 @@ Open Chrome DevTools for debugging:
 
 ---
 
+## 📦 Releasing / Versioning
+
+`premiere-extension/version.json` is the **single source of truth** for the app version.
+Bump it there, then run `build-dist.bat` — it mirrors that file to
+`dist/premiere-extension/version.json` (used by the auto-updater's file download) and to the
+repo-root `version.json` (used as the remote version check). Keep all three identical; the test
+harness (`node premiere-extension/test/run.js`) fails if they drift. The `downloadUrl` field in
+`version.json` controls where the updater pulls files from.
+
+> Note: `CSXS/manifest.xml`'s `ExtensionBundleVersion` is the CEP bundle version and is unrelated
+> to the app version in `version.json`.
+
 ## 📝 License
 
 MIT License - Free to use and modify.

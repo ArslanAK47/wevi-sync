@@ -8,6 +8,8 @@ const Config = {
     data: {
         syncFolder: '',
         editorName: '',
+        editorEmail: '',
+        teamFolderId: '',
         serverUrl: 'http://localhost:3000',
         autoSync: false,
         lastSync: null,
