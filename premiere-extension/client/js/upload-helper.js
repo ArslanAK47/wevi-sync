@@ -485,13 +485,19 @@ async function uploadProjectWithConcurrency(projectData, showProgressModal = tru
                 return;
             }
 
-            console.error(`❌ Error uploading ${file.name}:`, error);
+            // Surface the real reason: JSON.stringify(error) drops Error.message,
+            // so log the message + status explicitly.
+            const failReason = (error && error.message) ? error.message : 'Unknown upload error';
+            console.error(`❌ Error uploading ${file.name}: ${failReason}` +
+                (error && error.status ? ` [HTTP ${error.status}]` : ''));
 
-            // Update UI: error
+            // Update UI: error (show the reason on hover)
             if (item) {
                 item.className = 'upload-file-item error';
-                item.querySelector('.file-item-status').textContent = '✗ Failed';
-                item.querySelector('.file-item-status').classList.add('error');
+                const statusNode = item.querySelector('.file-item-status');
+                statusNode.textContent = '✗ Failed';
+                statusNode.title = failReason;
+                statusNode.classList.add('error');
                 uploadState.fileStatus[file.uploadKey] = 'error';
             }
 
