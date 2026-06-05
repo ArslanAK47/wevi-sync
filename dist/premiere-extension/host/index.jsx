@@ -531,7 +531,11 @@ function relinkAeFootage(aepPath, mappingJSON) {
         aeScript += '  var cur=app.project.file.fsName.replace(/\\\\/g,"/").toLowerCase();';
         aeScript += '  if (cur===aepFile.fsName.replace(/\\\\/g,"/").toLowerCase()) alreadyOpen=true;';
         aeScript += '}';
+        // Bring AE to the front so its (unavoidable) "missing footage" warning is
+        // visible — the user clicks OK once and the relink loop below then runs.
+        aeScript += 'try { app.activate(); } catch(ae){}';
         aeScript += 'if (!alreadyOpen) app.open(aepFile);';
+        aeScript += 'try { app.activate(); } catch(ae2){}';
         aeScript += 'var maps=' + mapLiteral + ';';
         aeScript += 'function baseName(p){ p=String(p).replace(/\\\\/g,"/"); return p.substring(p.lastIndexOf("/")+1).toLowerCase(); }';
         aeScript += 'var byFull={}; var byBase={};';
@@ -572,17 +576,22 @@ function relinkAeFootage(aepPath, mappingJSON) {
         var btResult = null, btError = null, btDone = false;
         bt.onResult = function (msg) { btResult = msg.body; btDone = true; };
         bt.onError = function (msg) { btError = msg.body; btDone = true; };
+        // Best-effort: nudge AE forward so the user sees the warning to click OK.
+        try { BridgeTalk.bringToFront('aftereffects'); } catch (bf) { }
         bt.send();
 
+        // Most of this window is the human clicking OK on AE's missing-footage
+        // warning (which AE forces and no script can suppress); the relink + save
+        // afterward are fast.
         var elapsed = 0;
-        while (!btDone && elapsed < 120000) { // saving can take a while
+        while (!btDone && elapsed < 180000) {
             BridgeTalk.pump();
             $.sleep(200);
             elapsed += 200;
         }
 
         if (btError) return JSON.stringify({ error: 'AE script error: ' + btError, relinked: 0, failed: 0 });
-        if (!btDone) return JSON.stringify({ error: 'AE did not respond within 120 seconds', relinked: 0, failed: 0 });
+        if (!btDone) return JSON.stringify({ error: 'After Effects did not respond in time — if its "missing files" warning is open, click OK and try Relink again.', relinked: 0, failed: 0 });
         if (!btResult) return JSON.stringify({ error: 'Empty response from AE', relinked: 0, failed: 0 });
 
         var parts = String(btResult).split('|');

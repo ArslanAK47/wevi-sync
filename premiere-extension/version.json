@@ -1,6 +1,6 @@
 {
-    "version": "1.6.1",
+    "version": "1.6.2",
     "releaseDate": "2026-06-05",
-    "changelog": "Upload failures now show the real reason (e.g. Google Drive storage full / permission) in the debug log and on hover, instead of a bare error code.",
+    "changelog": "After Effects relink now brings AE to the front so you can click OK on its 'missing files' warning, then relinks footage automatically. Added a manual 'Relink AE Footage' button and clearer results.",
     "downloadUrl": "https://raw.githubusercontent.com/ArslanAK47/wevi-sync/main/dist/premiere-extension"
 }

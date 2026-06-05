@@ -2027,7 +2027,11 @@ async function relinkAeProjectsAfterPull(targetFolder) {
     }
 
     const statusEl = document.getElementById('explorer-status');
-    const notify = (msg) => { try { if (typeof showNotification === 'function') showNotification(msg, 'info'); } catch (e) { } console.log(msg); };
+    const notify = (msg, type) => { try { if (typeof showNotification === 'function') showNotification(msg, type || 'info'); } catch (e) { } console.log(msg); };
+
+    // Heads-up: After Effects forces a "missing files" warning when it opens the
+    // project; the user clicks OK once and we relink automatically.
+    notify('🎬 Switch to After Effects and click OK on the "missing files" warning — footage will relink automatically.', 'info');
 
     for (const manifestPath of manifests) {
         let manifest;
@@ -2035,6 +2039,7 @@ async function relinkAeProjectsAfterPull(targetFolder) {
         catch (e) { console.warn('Bad AE manifest:', manifestPath); continue; }
 
         const aepLocal = manifestPath.replace(/\.aerelink\.json$/i, '.aep');
+        const aepName = path.basename(aepLocal);
         if (!fs.existsSync(aepLocal)) {
             console.warn('AE .aep not found for manifest (skipping):', aepLocal);
             continue;
@@ -2048,22 +2053,58 @@ async function relinkAeProjectsAfterPull(targetFolder) {
             continue;
         }
 
-        if (statusEl) statusEl.textContent = `🎬 Relinking After Effects footage (${path.basename(aepLocal)})...`;
+        // Folder(s) the footage actually landed in — shown if auto-relink fails so
+        // the user can point AE's Replace Footage there (AE relinks the rest).
+        const folders = {};
+        mappings.forEach(m => { try { folders[path.dirname(m.newPath)] = true; } catch (e) { } });
+        const folderHint = Object.keys(folders).slice(0, 3).join('\n');
+
+        if (statusEl) statusEl.textContent = `🎬 Relinking After Effects footage (${aepName})... click OK on the AE warning`;
         try {
             const result = await FileSystem.relinkAeFootage(aepLocal, mappings);
-            if (result && result.error) {
-                console.warn('AE relink reported:', result.error);
-                notify(`AE footage downloaded — open ${path.basename(aepLocal)} in After Effects to relink. (${result.error})`);
+            if (result && !result.error && result.relinked > 0) {
+                console.log(`✅ AE relink: ${result.relinked} relinked, ${result.failed} failed (${aepName})`);
+                if (statusEl) statusEl.textContent = `✅ Relinked ${result.relinked} AE footage item(s) in ${aepName}.`;
+                notify(`✅ Relinked ${result.relinked} footage file(s) in ${aepName}.`, 'info');
             } else {
-                console.log(`✅ AE relink: ${result.relinked} relinked, ${result.failed} failed (${path.basename(aepLocal)})`);
-                if (statusEl) statusEl.textContent = `✅ Relinked ${result.relinked} AE footage item(s) in ${path.basename(aepLocal)}.`;
+                const reason = (result && result.error) ? result.error : 'After Effects did not relink (it may not be open).';
+                console.warn('AE relink not completed:', reason);
+                if (statusEl) statusEl.textContent = `⚠️ Could not auto-relink ${aepName} — see the popup.`;
+                alert(
+                    `After Effects footage for "${aepName}" was downloaded, but auto-relink didn't finish.\n\n` +
+                    `${reason}\n\n` +
+                    `Fix it in seconds: in After Effects, right-click a missing file → Replace Footage → File, ` +
+                    `and pick any file in:\n${folderHint}\n\nAfter Effects will relink the rest automatically.`
+                );
             }
         } catch (e) {
             console.warn('AE relink failed:', e);
-            notify(`AE footage downloaded — open ${path.basename(aepLocal)} in After Effects to relink.`);
+            alert(
+                `After Effects footage for "${aepName}" was downloaded.\n\n` +
+                `In After Effects, right-click a missing file → Replace Footage → File, and pick any file in:\n${folderHint}`
+            );
         }
     }
 }
+window.relinkAeProjectsAfterPull = relinkAeProjectsAfterPull;
+
+// Manual "Relink AE Footage" — re-run relink on demand (e.g. after opening the
+// .aep yourself). Works on the already-open project with no blocking dialog.
+async function handleRelinkAeFootage() {
+    const btn = document.getElementById('btn-relink-ae');
+    const targetFolder = (explorerContext && explorerContext.targetFolder) || '';
+    if (!targetFolder) { alert('Open a pulled project first, then use Relink AE Footage.'); return; }
+    if (btn) { btn.disabled = true; btn.textContent = '🎬 Relinking...'; }
+    try {
+        await relinkAeProjectsAfterPull(targetFolder);
+    } catch (e) {
+        console.warn('Manual AE relink failed:', e);
+        alert('Relink failed: ' + (e && e.message ? e.message : e));
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '🎬 Relink AE Footage'; }
+    }
+}
+window.handleRelinkAeFootage = handleRelinkAeFootage;
 
 /**
  * Reopen the explorer modal from the floating download indicator
