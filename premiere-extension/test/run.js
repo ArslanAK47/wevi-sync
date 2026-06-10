@@ -191,6 +191,72 @@ test('locksToRenderShape maps to {project_name, locked_by}', () => {
     assert.strictEqual(shape[0].stale, false);
 });
 
+/* ---------------- explorer status (v1.6.3) ---------------- */
+section('explorer-status');
+
+test('missing locally', () => {
+    assert.strictEqual(DrivePaths.decideExplorerStatus({ exists: false }), 'missing');
+});
+test('size match -> synced', () => {
+    assert.strictEqual(DrivePaths.decideExplorerStatus({
+        exists: true, localSize: 100, driveSize: 100, remoteMd5: 'aaa', pullState: null
+    }), 'synced');
+});
+test('patched .prproj (size differs, remote md5 unchanged, local untouched) -> synced', () => {
+    assert.strictEqual(DrivePaths.decideExplorerStatus({
+        exists: true, localSize: 816040, driveSize: 816190, remoteMd5: 'aaa',
+        pullState: { remoteMd5: 'aaa', localSize: 816040 }
+    }), 'synced');
+});
+test('local edited since pull, remote unchanged -> localChanges', () => {
+    assert.strictEqual(DrivePaths.decideExplorerStatus({
+        exists: true, localSize: 900000, driveSize: 816190, remoteMd5: 'aaa',
+        pullState: { remoteMd5: 'aaa', localSize: 816040 }
+    }), 'localChanges');
+});
+test('remote changed since pull -> modified', () => {
+    assert.strictEqual(DrivePaths.decideExplorerStatus({
+        exists: true, localSize: 816040, driveSize: 820000, remoteMd5: 'bbb',
+        pullState: { remoteMd5: 'aaa', localSize: 816040 }
+    }), 'modified');
+});
+test('no pull state, size differs -> modified (legacy behavior)', () => {
+    assert.strictEqual(DrivePaths.decideExplorerStatus({
+        exists: true, localSize: 1, driveSize: 2, remoteMd5: 'aaa', pullState: null
+    }), 'modified');
+});
+test('drive folders have no md5 -> never falsely synced via pull state', () => {
+    assert.strictEqual(DrivePaths.decideExplorerStatus({
+        exists: true, localSize: 1, driveSize: 2, remoteMd5: null,
+        pullState: { remoteMd5: '', localSize: 1 }
+    }), 'modified');
+});
+
+/* ---------------- fork naming (v1.6.3) ---------------- */
+section('fork-naming');
+
+test('free name -> Project (editor)', () => {
+    assert.strictEqual(ProjectId.suggestForkName('Promo', 'Fiazan', ['Promo']), 'Promo (Fiazan)');
+});
+test('email -> local part only', () => {
+    assert.strictEqual(ProjectId.suggestForkName('Promo', 'fiazan011@gmail.com', []), 'Promo (fiazan011)');
+});
+test('taken -> counter suffix', () => {
+    assert.strictEqual(
+        ProjectId.suggestForkName('Promo', 'Fiazan', ['Promo', 'Promo (Fiazan)']),
+        'Promo (Fiazan 2)');
+    assert.strictEqual(
+        ProjectId.suggestForkName('Promo', 'Fiazan', ['Promo', 'promo (fiazan)', 'Promo (Fiazan 2)']),
+        'Promo (Fiazan 3)');
+});
+test('empty editor -> copy fallback', () => {
+    assert.strictEqual(ProjectId.suggestForkName('Promo', '', []), 'Promo (copy)');
+});
+test('illegal chars sanitized', () => {
+    const name = ProjectId.suggestForkName('Pro:mo?', 'Ed<it>or', []);
+    assert.strictEqual(/[\\/:*?"<>|]/.test(name), false);
+});
+
 /* ---------------- drive-errors ---------------- */
 section('drive-errors');
 

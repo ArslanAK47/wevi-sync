@@ -486,6 +486,36 @@ function saveBaseline(projectId, meta) {
     try { localStorage.setItem(BASELINE_KEY, JSON.stringify(all)); } catch (e) { }
 }
 
+// Per-file pull state: lets the explorer show ✓ Synced even when the local
+// size differs from Drive — e.g. the .prproj we patch (re-gzip) right after
+// download. Keyed by Drive file id → { remoteMd5, localSize, localMtimeMs }.
+const PULLSTATE_KEY = 'wevisync_pullstate';
+const PULLSTATE_MAX = 2000;
+function loadPullStates() {
+    try { return JSON.parse(localStorage.getItem(PULLSTATE_KEY) || '{}'); } catch (e) { return {}; }
+}
+function getPullState(fileId) {
+    if (!fileId) return null;
+    return loadPullStates()[fileId] || null;
+}
+function savePullState(fileId, state) {
+    if (!fileId || !state) return;
+    const all = loadPullStates();
+    all[fileId] = {
+        remoteMd5: state.remoteMd5 || '',
+        localSize: state.localSize,
+        localMtimeMs: state.localMtimeMs || 0,
+        savedAt: Date.now()
+    };
+    // Prune oldest entries so localStorage can't grow unbounded.
+    const ids = Object.keys(all);
+    if (ids.length > PULLSTATE_MAX) {
+        ids.sort((a, b) => (all[a].savedAt || 0) - (all[b].savedAt || 0));
+        for (let i = 0; i < ids.length - PULLSTATE_MAX; i++) delete all[ids[i]];
+    }
+    try { localStorage.setItem(PULLSTATE_KEY, JSON.stringify(all)); } catch (e) { }
+}
+
 async function initializeSync() {
     updateConnectionStatus(true);
 
@@ -702,8 +732,8 @@ async function refreshTeamProjects() {
                 displayName: parsed.cleanName,
                 projectId: parsed.projectId,       // null for un-migrated legacy folders
                 folderName: p.name,                // raw Drive folder name
-                uploaded_by: 'Google Drive',
-                updated_at: p.modifiedTime,
+                uploaded_by: (p.lastModifyingUser && (p.lastModifyingUser.displayName || p.lastModifyingUser.emailAddress)) || 'Google Drive',
+                updated_at: p.modifiedTime,        // real last-push date (folder is touched on push)
                 path: '',
                 id: p.id                           // Drive folder id (used for pull)
             };
@@ -743,7 +773,7 @@ function renderTeamProjects() {
         <div class="project-info">
           <div class="project-name">${escapeHtml(project.name)}</div>
           <div class="project-meta">
-            By ${escapeHtml(project.uploaded_by || 'Unknown')} • ${formatDate(project.updated_at)}
+            By ${escapeHtml(project.uploaded_by || 'Unknown')} • Updated ${formatDate(project.updated_at)}
           </div>
         </div>
         ${statusHtml}
@@ -1360,6 +1390,75 @@ function showUploadReportModal(result) {
     modal.classList.remove('hidden');
 }
 
+/**
+ * Promise-based 3-way push dialog: Create New (with an editable name) /
+ * secondary action (Overwrite Existing or Push Anyway) / Cancel.
+ * @returns {Promise<{choice:'create'|'secondary'|'cancel', newName:string}>}
+ */
+function showPushConflictDialog(opts) {
+    return new Promise(resolve => {
+        const modal = document.getElementById('modal-push-conflict');
+        const titleEl = document.getElementById('push-conflict-title');
+        const msgEl = document.getElementById('push-conflict-message');
+        const nameInput = document.getElementById('push-conflict-name');
+        const btnCreate = document.getElementById('btn-conflict-create');
+        const btnSecondary = document.getElementById('btn-conflict-secondary');
+        const btnCancel = document.getElementById('btn-conflict-cancel');
+        if (!modal || !nameInput) { resolve({ choice: 'cancel', newName: '' }); return; }
+
+        titleEl.textContent = opts.title || 'Project already exists';
+        msgEl.textContent = opts.message || '';
+        nameInput.value = opts.suggestedName || '';
+        btnSecondary.textContent = opts.secondaryLabel || 'Overwrite Existing';
+
+        let settled = false;
+        const done = (choice) => {
+            if (settled) return;
+            settled = true;
+            modal.classList.add('hidden');
+            resolve({ choice: choice, newName: nameInput.value.trim() });
+        };
+        btnCreate.onclick = () => done('create');
+        btnSecondary.onclick = () => done('secondary');
+        btnCancel.onclick = () => done('cancel');
+        modal.classList.remove('hidden');
+        try { nameInput.focus(); nameInput.select(); } catch (e) { }
+    });
+}
+
+/**
+ * "Push as new project": rewrite the identity sidecar with a fresh projectId
+ * and name so this push (and every future one) targets a brand-new Drive
+ * folder, leaving the existing project untouched.
+ */
+function forkCurrentProjectAsNew(newName, existingNames) {
+    const fs = require('fs');
+    let cleanName = ProjectId.sanitizeName(newName || '');
+    if (!cleanName) {
+        cleanName = ProjectId.suggestForkName(
+            currentProject.cleanName || (currentProject.name || '').replace(/\.prproj$/i, ''),
+            Config.data.editorName || Config.data.editorEmail, existingNames || []);
+    }
+    const sidecarPath = ProjectId.sidecarPathFor(currentProject.path);
+    const obj = {
+        schemaVersion: 1,
+        projectId: ProjectId.generateProjectId(cleanName),
+        cleanName: cleanName,
+        createdAt: new Date().toISOString(),
+        createdBy: Config.data.editorEmail || '',
+        forkedFrom: currentProject.projectId || ''
+    };
+    try {
+        ProjectId.writeSidecar(sidecarPath, obj, fs);
+    } catch (e) {
+        console.warn('Could not write fork sidecar (continuing):', e.message);
+    }
+    currentProject.projectId = obj.projectId;
+    currentProject.cleanName = cleanName;
+    console.log(`🔀 Forked project as "${cleanName}" (${obj.projectId})`);
+    return obj;
+}
+
 async function handlePushSelectedFiles() {
     const selectedFiles = pendingFilesToPush.filter(f => f.selected);
 
@@ -1391,32 +1490,75 @@ async function handlePushSelectedFiles() {
             mediaFiles: selectedFiles.filter(f => f.type !== 'project') // Exclude .prproj from mediaFiles list
         };
 
-        // Conflict guard: warn before overwriting a teammate's newer version.
+        // Push guard:
+        //  (a) a teammate pushed a newer version of OUR project since we last
+        //      synced → Overwrite / Create New / Cancel;
+        //  (b) first push, but another Drive project already uses this name →
+        //      Create New (keeps files separate) / Push Anyway / Cancel.
         try {
-            const existingFolder = await GoogleDrive.findProjectFolder({
-                cleanName: projectData.cleanName, projectId: projectData.projectId
-            });
-            if (existingFolder) {
-                const remoteMeta = await GoogleDrive.getProjectPrprojMeta(existingFolder.id, currentProject.name);
+            const folders = await GoogleDrive.listProjects(GoogleDrive.getTeamFolderId());
+            const myId = String(projectData.projectId || '').toLowerCase();
+            const parsedFolders = folders.map(f => ({
+                id: f.id, name: f.name, modifiedTime: f.modifiedTime,
+                parsed: ProjectId.parseDriveFolderName(f.name)
+            }));
+            const existingNames = parsedFolders.map(f => f.parsed.cleanName);
+            const mine = parsedFolders.find(f => f.parsed.projectId && f.parsed.projectId === myId);
+
+            let guard = null;
+            if (mine) {
+                const remoteMeta = await GoogleDrive.getProjectPrprojMeta(mine.id, currentProject.name);
                 const conflict = ProjectId.detectConflict(getBaseline(projectData.projectId), remoteMeta);
                 if (conflict.conflict) {
-                    const proceed = confirm(
-                        `"${projectData.cleanName}" was updated by ${conflict.who}` +
-                        (conflict.when ? ` on ${formatDate(conflict.when)}` : '') + `.\n\n` +
-                        `OK = overwrite their version\n` +
-                        `Cancel = stop (pull theirs first)`
-                    );
-                    if (!proceed) {
-                        isPushing = false;
-                        btn.disabled = false;
-                        btn.innerHTML = originalText;
-                        btn.classList.remove('disabled-look');
-                        return;
-                    }
+                    guard = {
+                        title: 'Project changed on Drive',
+                        message: `"${projectData.cleanName}" was updated by ${conflict.who}` +
+                            (conflict.when ? ` on ${formatDate(conflict.when)}` : '') +
+                            `. You can overwrite their version, or push yours as a new separate project to keep both.`,
+                        secondaryLabel: 'Overwrite Existing'
+                    };
+                }
+            } else {
+                const sameName = parsedFolders.filter(f => f.parsed.cleanName === projectData.cleanName);
+                if (sameName.length > 0) {
+                    const hasLegacy = sameName.some(f => !f.parsed.projectId);
+                    guard = {
+                        title: 'Name already used on Drive',
+                        message: `A project named "${projectData.cleanName}" already exists on Drive` +
+                            (sameName[0].modifiedTime ? ` (last updated ${formatDate(sameName[0].modifiedTime)})` : '') +
+                            `. Create a new project with a distinct name to keep the files separate.` +
+                            (hasLegacy ? ` If the existing folder is YOUR project (an older push), choose Push Anyway to keep using it.` : ''),
+                        secondaryLabel: 'Push Anyway (same name)'
+                    };
                 }
             }
+
+            if (guard) {
+                const res = await showPushConflictDialog({
+                    title: guard.title,
+                    message: guard.message,
+                    suggestedName: ProjectId.suggestForkName(
+                        projectData.cleanName,
+                        Config.data.editorName || Config.data.editorEmail,
+                        existingNames),
+                    secondaryLabel: guard.secondaryLabel
+                });
+                if (res.choice === 'cancel') {
+                    isPushing = false;
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                    btn.classList.remove('disabled-look');
+                    return;
+                }
+                if (res.choice === 'create') {
+                    const forked = forkCurrentProjectAsNew(res.newName, existingNames);
+                    projectData.projectId = forked.projectId;
+                    projectData.cleanName = forked.cleanName;
+                }
+                // 'secondary' (Overwrite / Push Anyway) falls through unchanged.
+            }
         } catch (conflictErr) {
-            console.warn('Conflict check failed (continuing):', conflictErr);
+            console.warn('Push guard check failed (continuing):', conflictErr);
         }
 
         const result = await uploadProjectWithConcurrency(projectData, true);
@@ -1431,9 +1573,9 @@ async function handlePushSelectedFiles() {
             }, 2500);
             // Report modal stays open so the user can read per-file failure reasons.
             showUploadReportModal(result);
-            await refreshTeamProjects();
 
-            // Record the new sync baseline so future pushes can detect conflicts.
+            // Record the new sync baseline so future pushes can detect conflicts,
+            // and stamp the project folder's date with this push.
             try {
                 const folder = await GoogleDrive.findProjectFolder({
                     cleanName: projectData.cleanName, projectId: projectData.projectId
@@ -1441,8 +1583,24 @@ async function handlePushSelectedFiles() {
                 if (folder) {
                     const meta = await GoogleDrive.getProjectPrprojMeta(folder.id, currentProject.name);
                     saveBaseline(projectData.projectId, meta);
+
+                    // The remote .prproj now equals our local file: record pull
+                    // state so later local edits read as "✎ Local changes".
+                    if (meta && meta.id) {
+                        try {
+                            const stat = require('fs').statSync(currentProject.path);
+                            savePullState(meta.id, { remoteMd5: meta.md5 || '', localSize: stat.size, localMtimeMs: stat.mtimeMs });
+                        } catch (_) { }
+                    }
+
+                    // Touch the folder's modifiedTime so the team list (and Drive
+                    // web's "Last modified" column) show when it was last pushed.
+                    try { await GoogleDrive.touchFolder(folder.id); }
+                    catch (te) { console.warn('Could not update folder date (non-fatal):', te.message); }
                 }
             } catch (e) { /* non-fatal */ }
+
+            await refreshTeamProjects();
         } else if (result.cancelled) {
             console.log('Upload cancelled by user.');
             btn.disabled = false;
@@ -1757,16 +1915,31 @@ function renderProjectExplorer(driveFiles, offlineFiles, targetFolder, isCurrent
             (of.lastPath && of.lastPath.endsWith(driveBaseName))
         );
 
+        // Status decision: md5-aware so a .prproj we patched after download
+        // (local size != Drive size on purpose) still reads as ✓ Synced.
+        const rowStatus = DrivePaths.decideExplorerStatus({
+            exists: exists,
+            localSize: localSize,
+            driveSize: driveSize,
+            remoteMd5: file.md5Checksum || null,
+            pullState: getPullState(file.id)
+        });
+
         if (offlineItem) {
             statusHtml = '<span class="status-offline">⚠️ Offline in Timeline</span>';
             // Escaping backslashes for JS string in HTML attribute
             const safePath = targetFolder.replace(/\\/g, '\\\\');
             actionBtn = `<button class="btn btn-primary btn-small" onclick="handleSingleFilePull('${file.id}', '${file.name}', '${safePath}', '${offlineItem.nodeId}')">Pull & Link</button>`;
-        } else if (!exists) {
+        } else if (rowStatus === 'missing') {
             statusHtml = '<span class="status-missing">Missing Locally</span>';
             const safePath = targetFolder.replace(/\\/g, '\\\\');
             actionBtn = `<button class="btn btn-primary btn-small" onclick="handleSingleFilePull('${file.id}', '${file.name}', '${safePath}', null)">Pull</button>`;
-        } else if (localSize !== driveSize) {
+        } else if (rowStatus === 'localChanges') {
+            // Remote unchanged since our last pull; only the local copy was edited.
+            statusHtml = '<span class="status-changed" title="Edited locally since last pull — push to share">✎ Local changes</span>';
+            const safePath = targetFolder.replace(/\\/g, '\\\\');
+            actionBtn = `<button class="btn btn-icon btn-small" title="Force Download (overwrites your local changes)" onclick="handleSingleFilePull('${file.id}', '${file.name}', '${safePath}', null)">⬇️</button>`;
+        } else if (rowStatus === 'modified') {
             statusHtml = `<span class="status-changed">Modified (${formatBytes(localSize)} vs ${formatBytes(driveSize)})</span>`;
             const safePath = targetFolder.replace(/\\/g, '\\\\');
             actionBtn = `<button class="btn btn-secondary btn-small" onclick="handleSingleFilePull('${file.id}', '${file.name}', '${safePath}', null)">Update</button>`;
@@ -1778,7 +1951,7 @@ function renderProjectExplorer(driveFiles, offlineFiles, targetFolder, isCurrent
 
         // Special handling for .prproj
         if (file.name.endsWith('.prproj')) {
-            if (isCurrentProject && localSize !== driveSize) {
+            if (isCurrentProject && rowStatus === 'modified') {
                 statusHtml = '<span class="status-changed">⚠️ Project Update!</span>';
                 const safePath = targetFolder.replace(/\\/g, '\\\\');
                 actionBtn = `<button class="btn btn-danger btn-small" onclick="handleSingleFilePull('${file.id}', '${file.name}', '${safePath}', 'PROJECT_RELOAD')">Update & Reload</button>`;
@@ -1886,12 +2059,22 @@ async function handlePullAll() {
         }
         const driveSize = parseInt(file.size) || 0;
 
-        if (exists && localSize === driveSize) {
+        // Same md5-aware decision as the explorer rows: a patched .prproj whose
+        // remote copy hasn't changed is skipped instead of re-downloaded (which
+        // would also silently revert local edits).
+        const pullStatus = DrivePaths.decideExplorerStatus({
+            exists: exists,
+            localSize: localSize,
+            driveSize: driveSize,
+            remoteMd5: file.md5Checksum || null,
+            pullState: getPullState(file.id)
+        });
+        if (pullStatus === 'synced' || pullStatus === 'localChanges') {
             skipped++;
             const processedNow = pulled + skipped;
             const remainingNow = Math.max(0, total - processedNow);
             if (statusEl) statusEl.textContent = `Skipped ${file.name} (${processedNow}/${total}, remaining: ${remainingNow})`;
-            continue; // Already synced, skip
+            continue; // Already synced (or local edits with unchanged remote), skip
         }
 
         // Find if this file is offline in timeline
@@ -2300,6 +2483,20 @@ async function handleSingleFilePull(fileId, fileName, targetFolder, linkNodeId) 
                 console.error('⚠️ Could not patch .prproj paths (non-fatal):', patchError.message);
                 // Non-fatal — project will still open, just with Link Media dialog
             }
+        }
+
+        // 2.6 Record pull state so the explorer shows ✓ Synced even though the
+        // patched .prproj's local size no longer equals the Drive size.
+        try {
+            const fileEntry = (explorerContext.files || []).find(f => f.id === fileId);
+            let remoteMd5 = (fileEntry && fileEntry.md5Checksum) || '';
+            if (!remoteMd5) {
+                try { remoteMd5 = (await GoogleDrive.getFileMetadata(fileId)).md5Checksum || ''; } catch (_) { }
+            }
+            const stat = fs.statSync(targetPath);
+            savePullState(fileId, { remoteMd5: remoteMd5, localSize: stat.size, localMtimeMs: stat.mtimeMs });
+        } catch (psErr) {
+            console.warn('Could not record pull state (non-fatal):', psErr.message);
         }
 
         // 3. Auto-Actions

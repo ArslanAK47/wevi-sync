@@ -157,8 +157,31 @@
         });
     }
 
+    /**
+     * Decide the explorer row status for a Drive file vs the local copy.
+     * pullState (optional) = { remoteMd5, localSize } recorded right after the
+     * last successful download (AFTER the .prproj path patch), so a file we
+     * deliberately rewrote on disk still reads as synced while the remote is
+     * unchanged.
+     * @param {{exists:boolean, localSize:number, driveSize:number,
+     *          remoteMd5:string|null, pullState:{remoteMd5:string,localSize:number}|null}} input
+     * @returns {'missing'|'synced'|'localChanges'|'modified'}
+     */
+    function decideExplorerStatus(input) {
+        if (!input || !input.exists) return 'missing';
+        if (input.localSize === input.driveSize) return 'synced';
+        var ps = input.pullState;
+        if (ps && ps.remoteMd5 && input.remoteMd5 && ps.remoteMd5 === input.remoteMd5) {
+            // Remote unchanged since our last pull; size differs only because
+            // we patched it locally (synced) or the user edited it (localChanges).
+            return (ps.localSize === input.localSize) ? 'synced' : 'localChanges';
+        }
+        return 'modified';
+    }
+
     var DrivePaths = {
         toForwardSlash: toForwardSlash,
+        decideExplorerStatus: decideExplorerStatus,
         sanitizeRelativePath: sanitizeRelativePath,
         basename: basename,
         computeDriveRelativePath: computeDriveRelativePath,

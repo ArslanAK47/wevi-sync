@@ -439,7 +439,7 @@ const GoogleDrive = {
         console.log(`📂 Listing projects in folder: ${folderId}`);
         console.log(`📂 Query: ${query}`);
 
-        const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime,owners)&includeItemsFromAllDrives=true&supportsAllDrives=true`;
+        const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime,owners,lastModifyingUser(displayName,emailAddress))&includeItemsFromAllDrives=true&supportsAllDrives=true`;
         console.log(`📂 URL: ${url}`);
 
         const data = await withRetry(async () => {
@@ -491,6 +491,29 @@ const GoogleDrive = {
         if (!res.ok) {
             const t = await res.text();
             throw new Error(driveErrorMessage(res.status, res.statusText, t, `Renaming to "${newName}"`));
+        }
+        return await res.json();
+    },
+
+    /**
+     * "Touch" a Drive folder so its modifiedTime reflects the last push.
+     * A folder's modifiedTime does NOT change when children change, so both
+     * the panel list and Drive web would otherwise show a stale date.
+     */
+    async touchFolder(folderId) {
+        const token = await this.getValidToken();
+        if (!token) throw new Error('Not authenticated');
+        const res = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${folderId}?supportsAllDrives=true&fields=id,modifiedTime`,
+            {
+                method: 'PATCH',
+                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ modifiedTime: new Date().toISOString() })
+            }
+        );
+        if (!res.ok) {
+            const t = await res.text();
+            throw new Error(driveErrorMessage(res.status, res.statusText, t, 'Updating folder date'));
         }
         return await res.json();
     },
@@ -576,7 +599,7 @@ const GoogleDrive = {
         const data = await res.json();
         const f = data.files && data.files[0];
         if (!f) return null;
-        return { md5: f.md5Checksum, modifiedTime: f.modifiedTime, lastModifyingUser: f.lastModifyingUser };
+        return { id: f.id, md5: f.md5Checksum, modifiedTime: f.modifiedTime, lastModifyingUser: f.lastModifyingUser };
     },
 
     // =============================================

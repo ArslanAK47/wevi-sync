@@ -152,6 +152,24 @@
     }
 
     /**
+     * Suggest a distinct name for "Push as new project": appends the editor's
+     * name, then a counter, until the name is free among existingNames.
+     */
+    function suggestForkName(cleanName, editorName, existingNames) {
+        var base = sanitizeName(cleanName) || 'Project';
+        var who = sanitizeName(String(editorName || '').split('@')[0]).trim() || 'copy';
+        var taken = {};
+        (existingNames || []).forEach(function (n) { taken[String(n).toLowerCase()] = true; });
+        var candidate = base + ' (' + who + ')';
+        var i = 2;
+        while (taken[candidate.toLowerCase()]) {
+            candidate = base + ' (' + who + ' ' + i + ')';
+            i++;
+        }
+        return candidate;
+    }
+
+    /**
      * Push lost-update guard. baseline = what we saw at last pull/push.
      * remoteMeta = current Drive .prproj metadata.
      */
@@ -212,6 +230,7 @@
         sanitizeName: sanitizeName,
         driveFolderName: driveFolderName,
         parseDriveFolderName: parseDriveFolderName,
+        suggestForkName: suggestForkName,
         decideProjectFolderAction: decideProjectFolderAction,
         detectConflict: detectConflict,
         isStaleLock: isStaleLock,

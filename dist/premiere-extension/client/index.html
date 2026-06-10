@@ -220,6 +220,24 @@
         </div>
     </div>
 
+    <!-- Push Conflict / Same-Name Modal -->
+    <div id="modal-push-conflict" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="push-conflict-title">Project already exists</h3>
+            </div>
+            <p id="push-conflict-message" style="margin: 4px 0 14px; color: var(--text-secondary); line-height: 1.5;"></p>
+            <label for="push-conflict-name" style="display:block; font-size:12px; margin-bottom:6px;">Push as a <strong>new separate project</strong> named:</label>
+            <input type="text" id="push-conflict-name"
+                style="width:100%; box-sizing:border-box; padding:8px; background:var(--bg-secondary); color:var(--text-primary); border:1px solid #444; border-radius:6px; margin-bottom:16px;">
+            <div class="modal-actions" style="display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap;">
+                <button id="btn-conflict-cancel" class="btn btn-secondary">Cancel</button>
+                <button id="btn-conflict-secondary" class="btn btn-danger">Overwrite Existing</button>
+                <button id="btn-conflict-create" class="btn btn-primary">Create New</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Project Action Modal -->
     <div id="modal-project" class="modal hidden">
         <div class="modal-content">
