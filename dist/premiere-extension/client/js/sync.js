@@ -87,9 +87,18 @@ const SyncEngine = {
             folders.forEach(f => { byId[f.id] = ProjectId.parseDriveFolderName(f.name).cleanName; });
             const lockFiles = await GoogleDrive.listLocks(folders.map(f => f.id));
             const entries = lockFiles.map(lf => ({ cleanName: byId[lf.parentId] || '', lock: lf.lock }));
+            this.pollFailures = 0;
             return { locks: ProjectId.locksToRenderShape(entries), recentPushes: [] };
         } catch (error) {
-            console.error('Error fetching sync state (Drive):', error);
+            // Background poll: a dropped connection is retried in 30s, so it's a
+            // warning (not the editor's "last error") unless it keeps happening.
+            this.pollFailures = (this.pollFailures || 0) + 1;
+            const offline = error instanceof TypeError && /fetch/i.test(error.message);
+            if (offline && this.pollFailures < 3) {
+                console.warn(`Drive unreachable (network), retrying in 30s [${this.pollFailures}]:`, error.message);
+            } else {
+                console.error(`Error fetching sync state (Drive), ${this.pollFailures} failure(s) in a row:`, error);
+            }
             return null;
         }
     },
@@ -177,27 +186,45 @@ const FileSystem = {
             try { this.csInterface.evalScript(script, (r) => resolve(String(r))); }
             catch (e) { resolve('JS error: ' + e.message); }
         });
+        // Actually CALL a host function: "exists" isn't enough. All CEP panels share one
+        // ExtendScript engine, so another extension can overwrite a same-named global
+        // (getActiveProject...) or break JSON; the error text + function source tell which.
+        const probe = () => ev(
+            "(function(){ if (typeof getActiveProject !== 'function') return 'MISSING';" +
+            " try { getActiveProject(); return 'OK'; }" +
+            " catch (e) { return 'ERR: ' + e.message + ' (line ' + e.line + ') | JSON: ' + typeof JSON +" +
+            " ' | getActiveProject is: ' + String(getActiveProject).substring(0, 160).replace(/\\s+/g, ' '); } })()");
+
         this._hostCheck = (async () => {
-            if (!this.csInterface || typeof __adobe_cep__ === 'undefined') return { ok: false, reason: 'not running inside Premiere' };
+            if (!this.csInterface || typeof __adobe_cep__ === 'undefined') {
+                console.warn('[Host] Not running inside Premiere; skipping host check');
+                return { ok: false, reason: 'not running inside Premiere' };
+            }
 
             const ping = await ev('1+1');
             if (ping !== '2') {
                 console.error(`[Host] Premiere's script engine is not responding (1+1 returned "${ping}"). Restart Premiere.`);
                 return { ok: false, reason: 'engine', detail: ping };
             }
-            if (await ev('typeof getActiveProject') === 'function') return { ok: true };
+            const first = await probe();
+            if (first === 'OK') {
+                console.log('[Host] host script OK');
+                return { ok: true };
+            }
 
+            // Missing, or overwritten by another panel: (re)load ours so our definitions win.
             const jsx = require('path').join(getExtensionRoot(), 'host', 'index.jsx').replace(/\\/g, '/');
-            console.warn('[Host] host/index.jsx was not loaded by Premiere, loading it now:', jsx);
+            console.warn(`[Host] host check failed (${first}); loading ${jsx}`);
             const loaded = await ev(
                 `(function(){ try { $.evalFile(${JsxEscape.jsxString(jsx)}); return 'ok'; }` +
                 ` catch (e) { return 'ERR: ' + e.message + ' (line ' + e.line + ')'; } })()`);
-            if (await ev('typeof getActiveProject') === 'function') {
-                console.log('[Host] host script loaded by the panel');
+            const second = await probe();
+            if (second === 'OK') {
+                console.log('[Host] host script repaired by reloading it');
                 return { ok: true, reloaded: true };
             }
-            console.error(`[Host] Could not load host/index.jsx: ${loaded}`);
-            return { ok: false, reason: 'load', detail: loaded };
+            console.error(`[Host] host script still failing after reload: ${second} | reload: ${loaded} | first: ${first}`);
+            return { ok: false, reason: 'load', detail: second };
         })();
         return this._hostCheck;
     },

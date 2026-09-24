@@ -451,6 +451,30 @@ test('nothing missing -> no relink and no save', () => {
     assert.deepStrictEqual([r.relinked, r.missing, r.log.saved], [0, 0, false]);
 });
 
+/* ---------------- sync folder validation ---------------- */
+section('sync-folder');
+const exists = p => !/missing/i.test(p);
+
+test('"E/Pr projects" (lost colon) is rejected with the E:\\ fix suggested', () => {
+    const r = DrivePaths.checkSyncFolderPath('E/Pr projects', exists);
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.suggestion, 'E:\\Pr projects');
+});
+
+test('valid drive paths normalise slashes, quotes and trailing separators', () => {
+    assert.deepStrictEqual(DrivePaths.checkSyncFolderPath('E:\\Pr projects', exists), { ok: true, path: 'E:\\Pr projects' });
+    assert.strictEqual(DrivePaths.checkSyncFolderPath('E:/Pr projects/', exists).path, 'E:\\Pr projects');
+    assert.strictEqual(DrivePaths.checkSyncFolderPath('"E:\\Pr projects"', exists).path, 'E:\\Pr projects');
+    assert.strictEqual(DrivePaths.checkSyncFolderPath('E:', exists).path, 'E:\\');
+    assert.strictEqual(DrivePaths.checkSyncFolderPath('\\\\nas\\share\\edits', exists).path, '\\\\nas\\share\\edits');
+});
+
+test('relative, empty and non-existent folders are rejected', () => {
+    assert.strictEqual(DrivePaths.checkSyncFolderPath('Pr projects', exists).ok, false);
+    assert.strictEqual(DrivePaths.checkSyncFolderPath('', exists).ok, false);
+    assert.match(DrivePaths.checkSyncFolderPath('C:\\Missing', exists).error, /does not exist/);
+});
+
 /* ---------------- update-core (auto-updater) ---------------- */
 section('update-core');
 const UpdateCore = require('../client/js/update-core.js');

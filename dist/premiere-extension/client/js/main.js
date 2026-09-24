@@ -709,7 +709,10 @@ function handleSyncState(state) {
 
 function updateFolderDisplay() {
     if (Config.data.syncFolder) {
-        elements.folderPath.textContent = Config.data.syncFolder;
+        const check = DrivePaths.checkSyncFolderPath(Config.data.syncFolder, folderExists);
+        elements.folderPath.textContent = check.ok
+            ? Config.data.syncFolder
+            : `⚠️ ${Config.data.syncFolder}: ${check.error} Click Browse to fix.`;
         elements.folderPath.classList.remove('placeholder');
     } else {
         elements.folderPath.textContent = 'Click Browse or ✏️ to set path';
@@ -731,15 +734,29 @@ function toggleFolderInput() {
     }
 }
 
-function saveFolderPath() {
-    const path = elements.folderPathInput.value.trim();
+function folderExists(p) {
+    try { return require('fs').statSync(p).isDirectory(); } catch (e) { return false; }
+}
 
-    if (path) {
-        Config.data.syncFolder = path;
-        Config.save();
-        updateFolderDisplay();
-        elements.folderInputSection.classList.add('hidden');
+function saveFolderPath() {
+    const typed = elements.folderPathInput.value.trim();
+    if (!typed) return;
+
+    const check = DrivePaths.checkSyncFolderPath(typed, folderExists);
+    if (!check.ok) {
+        console.warn('Rejected sync folder:', typed, check.error);
+        if (check.suggestion && folderExists(check.suggestion) &&
+            confirm(`${check.error}\n\nDid you mean:\n${check.suggestion}`)) {
+            elements.folderPathInput.value = check.suggestion;
+            return saveFolderPath();
+        }
+        alert(`${check.error}\n\nUse Browse... to pick the folder instead.`);
+        return;
     }
+    Config.data.syncFolder = check.path;
+    Config.save();
+    updateFolderDisplay();
+    elements.folderInputSection.classList.add('hidden');
 }
 
 async function handleBrowseFolder() {
@@ -766,9 +783,14 @@ async function handleBrowseFolder() {
 
 // First-run machines have no sync folder saved yet: ask for one instead of dead-ending.
 async function ensureSyncFolder() {
-    if (Config.data.syncFolder) return true;
+    const current = Config.data.syncFolder
+        ? DrivePaths.checkSyncFolderPath(Config.data.syncFolder, folderExists) : null;
+    if (current && current.ok) return true;
 
-    alert('Choose a local folder where synced projects will be downloaded.');
+    if (current) console.warn('Saved sync folder is invalid:', Config.data.syncFolder, current.error);
+    alert(current
+        ? `Your sync folder isn't usable:\n${current.error}\n\nChoose the folder where synced projects should be downloaded.`
+        : 'Choose a local folder where synced projects will be downloaded.');
     try {
         const folder = await FileSystem.selectFolder();
         if (folder) {

@@ -195,7 +195,35 @@
         return 'modified';
     }
 
+    /**
+     * Validate a sync folder path typed or saved by the editor.
+     * Windows needs a drive letter + colon (E:\...) or a UNC share (\\server\share).
+     * "E/Pr projects" (colon lost) is a real case: it looks fine but every pull fails.
+     * @param {string} p
+     * @param {function(string):boolean} [exists] folder-exists check (Node fs in the panel)
+     * @returns {{ok:boolean, path?:string, error?:string, suggestion?:string}}
+     */
+    function checkSyncFolderPath(p, exists) {
+        var raw = String(p == null ? '' : p).trim().replace(/^"(.*)"$/, '$1');
+        if (!raw) return { ok: false, error: 'No sync folder set.' };
+        var norm = raw.replace(/\//g, '\\');
+        if (norm.length > 3) norm = norm.replace(/\\+$/, '');
+        if (/^[A-Za-z]:$/.test(norm)) norm += '\\';
+        var absolute = /^[A-Za-z]:\\/.test(norm) || /^\\\\[^\\]+\\[^\\]+/.test(norm);
+        if (!absolute) {
+            var m = norm.match(/^([A-Za-z])\\(.+)$/);
+            return {
+                ok: false,
+                error: '"' + raw + '" is not a full folder path (it needs a drive letter like E:\\).',
+                suggestion: m ? m[1].toUpperCase() + ':\\' + m[2] : undefined
+            };
+        }
+        if (exists && !exists(norm)) return { ok: false, error: 'Folder "' + norm + '" does not exist.' };
+        return { ok: true, path: norm };
+    }
+
     var DrivePaths = {
+        checkSyncFolderPath: checkSyncFolderPath,
         toForwardSlash: toForwardSlash,
         decideExplorerStatus: decideExplorerStatus,
         sanitizeRelativePath: sanitizeRelativePath,

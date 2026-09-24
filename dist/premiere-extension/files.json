@@ -1,6 +1,6 @@
 {
-    "version": "1.9.0",
-    "generatedAt": "2026-09-24T08:13:45.272Z",
+    "version": "1.9.1",
+    "generatedAt": "2026-09-24T11:48:53.296Z",
     "files": [
         {
             "path": "CSXS/manifest.xml",
@@ -34,8 +34,8 @@
         },
         {
             "path": "client/js/drive-paths.js",
-            "size": 9697,
-            "sha256": "f5fd74c60d417c9ddb6a12b451658d8ba62ea44fc967557f6fd08e5a927628be"
+            "size": 11128,
+            "sha256": "5528891ca1f98ace9835e5666e6720987776ed08528c0d0e754620cc0748eec3"
         },
         {
             "path": "client/js/google-config.js",
@@ -44,8 +44,8 @@
         },
         {
             "path": "client/js/google-drive.js",
-            "size": 35287,
-            "sha256": "b03c7e59406ac31629f5871b604504d6350148ec7873a9266f380821ab3fcaa3"
+            "size": 35510,
+            "sha256": "85039afe18dc4180bc3f62616b4b215b465d40eb218f35e57b7ba28ade0793eb"
         },
         {
             "path": "client/js/jsx-escape.js",
@@ -59,8 +59,8 @@
         },
         {
             "path": "client/js/main.js",
-            "size": 119395,
-            "sha256": "1b4eca956b131745eba806a0a0de337c276f04382bd99ed6e31e6cfeb9644bc8"
+            "size": 120597,
+            "sha256": "b9f90808bbeeb85784fbac049b600e7b19b0ba3f3a663cc2578229b1da5cbfd7"
         },
         {
             "path": "client/js/project-id.js",
@@ -69,8 +69,8 @@
         },
         {
             "path": "client/js/sync.js",
-            "size": 28440,
-            "sha256": "2a37fa62521439bc8b294da7e0c6c71948018aded3beede07729dca11be26cff"
+            "size": 30065,
+            "sha256": "4f381cda7bb218fe86835b80f458bdee8269d1ea10f1ab2530ad0dbc5f53800c"
         },
         {
             "path": "client/js/telemetry.js",

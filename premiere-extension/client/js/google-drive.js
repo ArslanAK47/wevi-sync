@@ -436,11 +436,7 @@ const GoogleDrive = {
         if (!token) throw new Error('Not authenticated');
 
         const query = `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-        console.log(`📂 Listing projects in folder: ${folderId}`);
-        console.log(`📂 Query: ${query}`);
-
         const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime,owners,lastModifyingUser(displayName,emailAddress))&includeItemsFromAllDrives=true&supportsAllDrives=true`;
-        console.log(`📂 URL: ${url}`);
 
         const data = await withRetry(async () => {
             const res = await fetch(url, {
@@ -456,7 +452,14 @@ const GoogleDrive = {
             return await res.json();
         });
 
-        console.log(`📂 Found ${data.files?.length || 0} projects:`, data.files?.map(f => f.name));
+        // Polled every 30s: only log the list when it changes, so the debug log
+        // (uploaded to the admin, capped in size) keeps the lines that matter.
+        const names = (data.files || []).map(f => f.name);
+        const signature = folderId + '|' + names.join('|');
+        if (signature !== this._lastProjectListSig) {
+            this._lastProjectListSig = signature;
+            console.log(`📂 Found ${names.length} projects in ${folderId}:`, names);
+        }
         return data.files || [];
     },
 
