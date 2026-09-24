@@ -1,0 +1,121 @@
+{
+    "version": "1.7.0",
+    "generatedAt": "2026-09-24T07:18:21.074Z",
+    "files": [
+        {
+            "path": "CSXS/manifest.xml",
+            "size": 1846,
+            "sha256": "ae23861e9594aaa757e66ba9d8d395694e1e5a5242a7090992371ef26c8df34b"
+        },
+        {
+            "path": "client/css/styles.css",
+            "size": 28974,
+            "sha256": "d2400215a0fb929140cb871749545ef0c2eacee86c9628255c30a0654646acbb"
+        },
+        {
+            "path": "client/index.html",
+            "size": 22172,
+            "sha256": "1a1a2e6753c648e5acac8299a68cc919e5fdcb343245ac126eb06f395759b4ca"
+        },
+        {
+            "path": "client/js/config.js",
+            "size": 1881,
+            "sha256": "c851e26285be9fe16a1fd129fb26ea21c5f6dc1cfb660600356eedc62eed0303"
+        },
+        {
+            "path": "client/js/download-helper.js",
+            "size": 19329,
+            "sha256": "8beb26ba4dead85dad52980743e971b22b47c11e5569aa8e57a9a37fd16699e1"
+        },
+        {
+            "path": "client/js/drive-errors.js",
+            "size": 3357,
+            "sha256": "d45a6d3be41986263e4f690fb9bfc7fa088c17dfd3adfeace300f73499ea9615"
+        },
+        {
+            "path": "client/js/drive-paths.js",
+            "size": 9697,
+            "sha256": "f5fd74c60d417c9ddb6a12b451658d8ba62ea44fc967557f6fd08e5a927628be"
+        },
+        {
+            "path": "client/js/google-config.js",
+            "size": 1210,
+            "sha256": "3b91c9eae05f217c52f9246f42265e47b682d55926fe3eaf383f987d9341dfde"
+        },
+        {
+            "path": "client/js/google-drive.js",
+            "size": 35287,
+            "sha256": "b03c7e59406ac31629f5871b604504d6350148ec7873a9266f380821ab3fcaa3"
+        },
+        {
+            "path": "client/js/jsx-escape.js",
+            "size": 1490,
+            "sha256": "528f9745393ceb75f86829985b1858f7c8390971eb4f4a5c8e4add86242001de"
+        },
+        {
+            "path": "client/js/lib/CSInterface.js",
+            "size": 2220,
+            "sha256": "cb136937c2f22d2bb5f88aa94e71a8f03de9567c62435322cfd2fa613697156e"
+        },
+        {
+            "path": "client/js/main.js",
+            "size": 118662,
+            "sha256": "5ac0840827e28921dc8a5f48d31b9e0124ededac1824f4ebfc28bedf77997c62"
+        },
+        {
+            "path": "client/js/project-id.js",
+            "size": 9932,
+            "sha256": "3d68167262aa4aa5731868d834e615f1ce639b13e2b3ece65cf44b50d70b83b4"
+        },
+        {
+            "path": "client/js/sync.js",
+            "size": 26337,
+            "sha256": "03947309813747f85a3310d683e567289e4f19b8034365fb547f2fd14e39aee8"
+        },
+        {
+            "path": "client/js/telemetry.js",
+            "size": 13883,
+            "sha256": "72f3d722e511e76c53793b87df780ab81baa502d1ee56dddb9687ed9a46fbb84"
+        },
+        {
+            "path": "client/js/test-auth.js",
+            "size": 2565,
+            "sha256": "eaf22ab2e7485ba9cf34b870e11ece6bc0e96976747a6d9d5e5a625336491782"
+        },
+        {
+            "path": "client/js/test-suite.js",
+            "size": 32939,
+            "sha256": "5d06a5b68b04971ad9db0287918c7ab28559c0eb3f151d76129256d0cdc9158b"
+        },
+        {
+            "path": "client/js/update-checker.js",
+            "size": 35066,
+            "sha256": "64e27348f538e9a6821e9ebd58da44e26341512a9ba7458895034883c3dc9145"
+        },
+        {
+            "path": "client/js/update-core.js",
+            "size": 5037,
+            "sha256": "112720c3e3dfc9634dd34b39a67005739b8f43c24111ef7b41b8f7ef3b1fafb2"
+        },
+        {
+            "path": "client/js/upload-helper.js",
+            "size": 26070,
+            "sha256": "cef8f96878410514ae558509de7fdc19e6482d870f561d580c5bbf3a1e2f89c2"
+        },
+        {
+            "path": "client/js/upload-xhr.js",
+            "size": 17122,
+            "sha256": "9351ab777e0aceff71a254c357ed604512812099847944629ac6f3f1441dfd35"
+        },
+        {
+            "path": "host/index.jsx",
+            "size": 34993,
+            "sha256": "51b95d9c74a5f97a92d163f515b49e6b416289197d8ceaafb48dd5dd7aab9113"
+        },
+        {
+            "path": "icons/icon.png",
+            "size": 338434,
+            "sha256": "d5ff9f12f7acc6885b191c207cf291acf9137f670330dbde9070623db3b48e4a"
+        }
+    ]
+}

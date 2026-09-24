@@ -287,38 +287,52 @@ function setupEventListeners() {
    DEBUG CONSOLE
    ============================================ */
 
-// Capture all console.log calls
+// Capture all console.log calls (also uploaded to the admin by telemetry.js)
 const debugLogs = [];
+const DEBUG_LOG_MAX = 3000;
 const originalConsoleLog = console.log;
 const originalConsoleWarn = console.warn;
 const originalConsoleError = console.error;
 
-console.log = function (...args) {
-    const message = args.map(arg =>
-        typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
-    ).join(' ');
-    debugLogs.push(`[LOG] ${message}`);
+function formatLogArgs(args) {
+    return args.map(arg => {
+        if (arg instanceof Error) return arg.stack || arg.message;
+        if (typeof arg === 'object') {
+            try { return JSON.stringify(arg, null, 2); } catch (e) { return String(arg); }
+        }
+        return String(arg);
+    }).join(' ');
+}
+
+function pushDebugLog(level, message) {
+    debugLogs.push(`${new Date().toLocaleTimeString()} [${level}] ${message}`);
+    if (debugLogs.length > DEBUG_LOG_MAX) debugLogs.splice(0, debugLogs.length - DEBUG_LOG_MAX);
     updateDebugOutput();
+}
+
+console.log = function (...args) {
+    pushDebugLog('LOG', formatLogArgs(args));
     originalConsoleLog.apply(console, args);
 };
 
 console.warn = function (...args) {
-    const message = args.map(arg =>
-        typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
-    ).join(' ');
-    debugLogs.push(`[WARN] ${message}`);
-    updateDebugOutput();
+    pushDebugLog('WARN', formatLogArgs(args));
     originalConsoleWarn.apply(console, args);
 };
 
 console.error = function (...args) {
-    const message = args.map(arg =>
-        typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
-    ).join(' ');
-    debugLogs.push(`[ERROR] ${message}`);
-    updateDebugOutput();
+    const message = formatLogArgs(args);
+    pushDebugLog('ERROR', message);
+    if (typeof Telemetry !== 'undefined') Telemetry.noteError(message);
     originalConsoleError.apply(console, args);
 };
+
+window.addEventListener('error', (e) => {
+    console.error('Uncaught:', e.message, e.filename ? `(${e.filename}:${e.lineno})` : '');
+});
+window.addEventListener('unhandledrejection', (e) => {
+    console.error('Unhandled promise rejection:', e.reason && (e.reason.stack || e.reason.message || e.reason));
+});
 
 function updateDebugOutput() {
     const output = document.getElementById('debug-output');
@@ -532,6 +546,10 @@ async function initializeSync() {
         } catch (e) { console.warn('Could not fetch user identity:', e); }
     }
 
+    // Status + debug log for the admin, and the admin-only view.
+    if (typeof Telemetry !== 'undefined') Telemetry.start();
+    setupAdminView();
+
     // First run: pick the team's shared Drive folder (falls back to the default).
     await ensureTeamFolder();
 
@@ -548,6 +566,123 @@ async function initializeSync() {
         }
         updateLastCheckTime();
     });
+}
+
+/* ============================================
+   ADMIN VIEW (editor versions + debug logs)
+   ============================================ */
+
+let adminEditors = [];
+
+async function setupAdminView() {
+    const btn = document.getElementById('btn-admin');
+    if (!btn || typeof Telemetry === 'undefined') return;
+    const isAdmin = await Telemetry.isCurrentUserAdmin();
+    btn.classList.toggle('hidden', !isAdmin);
+}
+
+async function openAdminView() {
+    openModal('modal-admin');
+    await refreshAdminView();
+}
+window.openAdminView = openAdminView;
+
+async function refreshAdminView() {
+    const list = document.getElementById('admin-editor-list');
+    const status = document.getElementById('admin-status');
+    if (!list) return;
+    status.textContent = 'Loading editors…';
+    list.innerHTML = '';
+    try {
+        adminEditors = await Telemetry.listEditors();
+        const latest = (window.UpdateState && UpdateState.latestVersion) || getLocalVersion().version;
+        status.textContent = `${adminEditors.length} editor(s) · latest release v${latest}`;
+        if (adminEditors.length === 0) {
+            list.innerHTML = '<div class="empty-state small"><p>No editor has reported in yet.</p><p class="hint">Editors appear after they open v1.7.0 or newer.</p></div>';
+            return;
+        }
+        list.innerHTML = adminEditors.map((ed, i) => {
+            const behind = latest && UpdateCore.compareVersions(latest, ed.extensionVersion || '0.0.0') > 0;
+            const seen = ed.lastSeen || ed._modifiedTime;
+            return `
+                <div class="admin-editor-row">
+                    <div class="admin-editor-main">
+                        <strong>${escapeHtml(ed.name || ed.email || 'Unknown')}</strong>
+                        <span class="admin-editor-email">${escapeHtml(ed.email || '')}</span>
+                        <span class="admin-editor-meta">
+                            <span class="${behind ? 'admin-version-behind' : 'admin-version-ok'}">v${escapeHtml(ed.extensionVersion || '?')}${behind ? ' (outdated)' : ''}</span>
+                            · ${escapeHtml(ed.hostApp || 'Premiere')} ${escapeHtml(ed.hostVersion || '')}
+                            · seen ${seen ? escapeHtml(formatAdminTime(seen)) : 'never'}
+                        </span>
+                        ${ed.lastError ? `<span class="admin-editor-error">⚠️ ${escapeHtml(ed.lastError.slice(0, 140))}</span>` : ''}
+                        ${ed._readError ? `<span class="admin-editor-error">Could not read status: ${escapeHtml(ed._readError)}</span>` : ''}
+                    </div>
+                    <button class="btn btn-secondary btn-small" onclick="viewEditorLog(${i})">View log</button>
+                </div>`;
+        }).join('');
+    } catch (e) {
+        status.textContent = 'Could not load editors: ' + e.message;
+    }
+}
+window.refreshAdminView = refreshAdminView;
+
+function viewEditorLog(index) {
+    const ed = adminEditors[index];
+    if (!ed) return;
+    const out = document.getElementById('admin-log-output');
+    document.getElementById('admin-log-title').textContent = `${ed.name || ed.email} · v${ed.extensionVersion || '?'}`;
+    const u = ed.update || {};
+    const header = [
+        `Editor:        ${ed.name || ''} <${ed.email || ''}>`,
+        `Extension:     v${ed.extensionVersion || '?'}`,
+        `Host:          ${ed.hostApp || ''} ${ed.hostVersion || ''}`,
+        `OS:            ${ed.os || ''}`,
+        `Sync folder:   ${ed.syncFolder || '(not set)'}`,
+        `Session start: ${ed.sessionStarted || ''}`,
+        `Last seen:     ${ed.lastSeen || ''}`,
+        `Update check:  ${u.lastCheckResult || '-'} ${u.lastCheckAt ? '@ ' + u.lastCheckAt : ''}`,
+        `Update install:${u.lastAttemptResult ? ' ' + u.lastAttemptResult : ' -'} ${u.lastAttemptAt ? '@ ' + u.lastAttemptAt : ''}`,
+        `Last error:    ${ed.lastError || '-'}`,
+        '----------------------------------------------------------------'
+    ];
+    out.value = header.concat(ed.log || []).join('\n');
+    document.getElementById('admin-log-section').classList.remove('hidden');
+    out.scrollTop = out.scrollHeight;
+}
+window.viewEditorLog = viewEditorLog;
+
+function copyAdminLog() {
+    const out = document.getElementById('admin-log-output');
+    out.select();
+    document.execCommand('copy');
+    showNotification('Log copied', 'success');
+}
+window.copyAdminLog = copyAdminLog;
+
+async function saveAdminLog() {
+    const out = document.getElementById('admin-log-output');
+    const title = document.getElementById('admin-log-title').textContent || 'editor';
+    try {
+        const folder = await FileSystem.selectFolder();
+        if (!folder) return;
+        const name = 'TeamSync-log-' + title.split(' ')[0].replace(/[^a-zA-Z0-9@._-]/g, '_') + '-' + new Date().toISOString().slice(0, 10) + '.txt';
+        const dest = require('path').join(folder, name);
+        require('fs').writeFileSync(dest, out.value, 'utf8');
+        showNotification('Saved ' + dest, 'success');
+    } catch (e) {
+        showNotification('Could not save log: ' + e.message, 'error');
+    }
+}
+window.saveAdminLog = saveAdminLog;
+
+function formatAdminTime(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return iso;
+    const mins = Math.round((Date.now() - d.getTime()) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins} min ago`;
+    if (mins < 60 * 24) return `${Math.round(mins / 60)} h ago`;
+    return d.toLocaleString();
 }
 
 function handleSyncState(state) {
@@ -622,6 +757,26 @@ async function handleBrowseFolder() {
         // Show manual input on error
         toggleFolderInput();
     }
+}
+
+// First-run machines have no sync folder saved yet: ask for one instead of dead-ending.
+async function ensureSyncFolder() {
+    if (Config.data.syncFolder) return true;
+
+    alert('Choose a local folder where synced projects will be downloaded.');
+    try {
+        const folder = await FileSystem.selectFolder();
+        if (folder) {
+            Config.data.syncFolder = folder;
+            Config.save();
+            updateFolderDisplay();
+            return true;
+        }
+    } catch (error) {
+        console.error('Error selecting folder:', error);
+        toggleFolderInput();
+    }
+    return false;
 }
 
 // Scan sync folder for .prproj files
@@ -1022,7 +1177,17 @@ async function handlePushCurrent() {
         // Uses Node.js to read .aep binary and extract
         // embedded file paths (no AE or BridgeTalk needed)
         // =============================================
-        const aepFiles = timelineFilesArray ? timelineFilesArray.filter(f => f.isAep) : [];
+        const aepFiles = Array.isArray(timelineFilesArray) ? timelineFilesArray.filter(f => f.isAep) : [];
+        // Also scan any .aep that only came in via the project-panel merge (e.g. its
+        // comp sits in a nested sequence) — otherwise it would ship with no manifest.
+        allFiles.forEach(f => {
+            if (/\.aep$/i.test(f.path || '') && !aepFiles.some(a => a.path.toLowerCase() === f.path.toLowerCase())) {
+                aepFiles.push({ name: f.name, path: f.path, isAep: true, compNames: [] });
+            }
+        });
+        // aepPath -> footage paths for its relink manifest. Filled BEFORE the
+        // upload de-dupe so footage Premiere also uses is still listed.
+        const aeFootageByAep = {};
 
         if (aepFiles.length > 0) {
             console.log(`🎬 Found ${aepFiles.length} After Effects project(s) in timeline`);
@@ -1050,10 +1215,11 @@ async function handlePushCurrent() {
                         ? aepFile.compNames
                         : (aepFile.compName ? [aepFile.compName] : []);
                     const aeFootageFiles = await FileSystem.getAEFootageFiles(aepFile.path, compNames);
+                    let bridgeTalkFound = 0;
                     let bridgeTalkAdded = 0;
 
                     for (const footage of aeFootageFiles) {
-                        if (!footage.path || seenPaths.has(footage.path)) continue;
+                        if (!footage.path) continue;
 
                         let fileExists = false;
                         let fileSize = 0;
@@ -1066,6 +1232,10 @@ async function handlePushCurrent() {
                             console.warn('Could not check AE BridgeTalk file:', footage.path);
                         }
                         if (!fileExists) continue;
+
+                        bridgeTalkFound++;
+                        DrivePaths.addAeFootage(aeFootageByAep, aepFile.path, footage.path);
+                        if (seenPaths.has(footage.path)) continue; // already queued for upload
 
                         const ext = footage.path.split('.').pop().toLowerCase();
                         let type = 'file';
@@ -1087,8 +1257,8 @@ async function handlePushCurrent() {
                         bridgeTalkAdded++;
                     }
 
-                    if (bridgeTalkAdded > 0) {
-                        console.log(`✅ AE BridgeTalk added ${bridgeTalkAdded} file(s) from ${aepFile.name}`);
+                    if (bridgeTalkFound > 0) {
+                        console.log(`✅ AE BridgeTalk found ${bridgeTalkFound} footage file(s) in ${aepFile.name} (${bridgeTalkAdded} new to upload)`);
                         continue; // Skip binary fallback when AE returns usable data
                     }
 
@@ -1175,8 +1345,6 @@ async function handlePushCurrent() {
 
                     // Verify files exist and add to list
                     for (const foundPath of foundPaths) {
-                        if (seenPaths.has(foundPath)) continue;
-
                         let fileExists = false;
                         let fileSize = 0;
                         try {
@@ -1189,6 +1357,9 @@ async function handlePushCurrent() {
                         }
 
                         if (fileExists) {
+                            DrivePaths.addAeFootage(aeFootageByAep, aepFile.path, foundPath);
+                            if (seenPaths.has(foundPath)) continue; // already queued for upload
+
                             const ext = foundPath.split('.').pop().toLowerCase();
                             let type = 'file';
                             if (['mp4', 'mov', 'avi', 'mkv', 'wmv', 'm4v', 'mxf', 'mpg', 'mpeg', 'webm'].includes(ext)) type = 'video';
@@ -1221,17 +1392,11 @@ async function handlePushCurrent() {
             // Effects on pull (maps each footage's original path -> Drive path).
             try {
                 const fsMod = require('fs');
-                const aeFootageByAep = {};
-                for (const f of allFiles) {
-                    if (f.isAeFootage && f.aepPath) {
-                        (aeFootageByAep[f.aepPath] = aeFootageByAep[f.aepPath] || []).push(f);
-                    }
-                }
                 const projectRoot = FileSystem.getDirname(currentProject.path);
                 for (const aepPath of Object.keys(aeFootageByAep)) {
                     const manifest = DrivePaths.buildAeRelinkManifest(
                         { path: aepPath, name: FileSystem.getBasename(aepPath) },
-                        aeFootageByAep[aepPath].map(f => ({ path: f.originalPath || f.path, name: FileSystem.getBasename(f.path) })),
+                        aeFootageByAep[aepPath].map(p => ({ path: p, name: FileSystem.getBasename(p) })),
                         projectRoot, projectRoot);
                     const manifestPath = aepPath.replace(/\.aep$/i, '') + '.aerelink.json';
                     fsMod.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
@@ -1654,8 +1819,7 @@ async function handleAddProject() {
 }
 
 async function handleImportProject(projectName) {
-    if (!Config.data.syncFolder) {
-        alert('Please set a sync folder first.\n\nClick "Browse..." or ✏️ to set the path.');
+    if (!(await ensureSyncFolder())) {
         closeAllModals();
         return;
     }
@@ -2089,8 +2253,8 @@ async function handlePullAll() {
         const linkNodeId = offlineItem ? offlineItem.nodeId : null;
 
         try {
-            const safePath = targetFolder.replace(/\\/g, '\\\\');
-            await handleSingleFilePull(file.id, file.name, safePath, linkNodeId);
+            // Pass the real path: the doubled-backslash form is only for inline onclick HTML.
+            await handleSingleFilePull(file.id, file.name, targetFolder, linkNodeId);
             pulled++;
             const processedNow = pulled + skipped;
             const remainingNow = Math.max(0, total - processedNow);
@@ -2114,8 +2278,7 @@ async function handlePullAll() {
 
             try {
                 const relinkResult = await new Promise(resolve => {
-                    const escapedPath = targetFolder.replace(/\\/g, '\\\\');
-                    FileSystem.csInterface.evalScript(`autoRelinkOfflineMedia('${escapedPath}')`, resolve);
+                    FileSystem.csInterface.evalScript(`autoRelinkOfflineMedia(${JsxEscape.jsxString(targetFolder)})`, resolve);
                 });
 
                 console.log('Auto-relink result:', relinkResult);
@@ -2245,7 +2408,14 @@ async function relinkAeProjectsAfterPull(targetFolder) {
         if (statusEl) statusEl.textContent = `🎬 Relinking After Effects footage (${aepName})... click OK on the AE warning`;
         try {
             const result = await FileSystem.relinkAeFootage(aepLocal, mappings);
-            if (result && !result.error && result.relinked > 0) {
+            if (result && !result.error) {
+                console.log(`🎬 AE relink stats (${aepName}): relinked ${result.relinked}, failed ${result.failed}, ` +
+                    `scanned ${result.scanned}, missing ${result.missing}, unmatched ${result.unmatched}, mappings ${mappings.length}`);
+            }
+            if (result && !result.error && !result.relinked && !result.failed && result.scanned > 0 && result.missing === 0) {
+                // Nothing was missing — footage is already linked (e.g. a repeat pull).
+                if (statusEl) statusEl.textContent = `✅ ${aepName}: After Effects footage already linked.`;
+            } else if (result && !result.error && result.relinked > 0) {
                 console.log(`✅ AE relink: ${result.relinked} relinked, ${result.failed} failed (${aepName})`);
                 if (statusEl) statusEl.textContent = `✅ Relinked ${result.relinked} AE footage item(s) in ${aepName}.`;
                 notify(`✅ Relinked ${result.relinked} footage file(s) in ${aepName}.`, 'info');
@@ -2507,9 +2677,8 @@ async function handleSingleFilePull(fileId, fileName, targetFolder, linkNodeId) 
 
                 // Auto-relink offline media after project reload (with delay for load)
                 setTimeout(() => {
-                    const escapedFolder = targetFolder.replace(/\\/g, '\\\\');
                     console.log('🔗 Auto-relinking media after project reload...');
-                    FileSystem.csInterface.evalScript(`autoRelinkOfflineMedia('${escapedFolder}')`, (res) => {
+                    FileSystem.csInterface.evalScript(`autoRelinkOfflineMedia(${JsxEscape.jsxString(targetFolder)})`, (res) => {
                         try {
                             const r = JSON.parse(res);
                             if (r.relinked > 0) {
@@ -2526,8 +2695,10 @@ async function handleSingleFilePull(fileId, fileName, targetFolder, linkNodeId) 
             console.log(`🔗 Auto-linking node ${linkNodeId} to ${targetPath}`);
             if (statusEl) statusEl.textContent = `Linking media...`;
 
-            FileSystem.csInterface.evalScript(`relinkMedia('${linkNodeId}', '${targetPath.replace(/\\/g, '\\\\')}')`, (res) => {
-                const r = JSON.parse(res);
+            FileSystem.csInterface.evalScript(`relinkMedia(${JsxEscape.jsxString(linkNodeId)}, ${JsxEscape.jsxString(targetPath)})`, (res) => {
+                let r;
+                try { r = JSON.parse(res); }
+                catch (e) { r = { success: false, error: 'Unexpected response: ' + (res || 'empty') }; }
                 if (r.success) {
                     alert(`✅ Linked ${fileName}!`);
                     if (statusEl) statusEl.textContent = `Linked ${fileName}`;
@@ -2577,10 +2748,7 @@ function formatBytes(bytes, decimals = 2) {
 async function handlePullProject(projectId, projectName, skipLoading = false) {
     console.log(`📂 Opening Project Explorer for: ${projectName}`);
 
-    if (!Config.data.syncFolder) {
-        alert('Please configure a sync folder first!');
-        return;
-    }
+    if (!(await ensureSyncFolder())) return;
 
     // Show loading state in explorer
     const modal = document.getElementById('modal-project-explorer');

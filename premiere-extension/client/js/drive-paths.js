@@ -86,6 +86,22 @@
     }
 
     /**
+     * Record that `footagePath` is used by the .aep at `aepPath` (for its relink
+     * manifest). Independent of upload de-duplication: footage Premiere also uses
+     * must still be listed, or AE can't relink it on pull.
+     * @param {Object<string,string[]>} byAep  aepPath -> footage paths (mutated)
+     */
+    function addAeFootage(byAep, aepPath, footagePath) {
+        if (!byAep || !aepPath || !footagePath) return;
+        var list = byAep[aepPath] = byAep[aepPath] || [];
+        var key = toForwardSlash(footagePath).toLowerCase();
+        for (var i = 0; i < list.length; i++) {
+            if (toForwardSlash(list[i]).toLowerCase() === key) return;
+        }
+        list.push(footagePath);
+    }
+
+    /**
      * Index of downloaded files (relative paths under the pull target folder)
      * for relink lookups. Used by both the .prproj patch and AE fallback.
      * @param {string[]} downloadedRelPaths  e.g. ["media/clip.mp4","ae/footage/clip.mp4"]
@@ -186,6 +202,7 @@
         basename: basename,
         computeDriveRelativePath: computeDriveRelativePath,
         buildAeRelinkManifest: buildAeRelinkManifest,
+        addAeFootage: addAeFootage,
         buildRelinkIndex: buildRelinkIndex,
         chooseRelinkTarget: chooseRelinkTarget,
         resolveRelinkMappings: resolveRelinkMappings

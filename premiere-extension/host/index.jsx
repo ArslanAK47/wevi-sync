@@ -506,54 +506,83 @@ function getAEFootageFiles(aepPath, compNamesJSON) {
  * @param {string} mappingJSON   JSON array of { o: oldPath, n: newLocalPath }
  * @returns {string} JSON { relinked, failed, error }
  */
+/**
+ * Build the ExtendScript source that runs INSIDE After Effects to relink footage.
+ * Kept separate (and pure) so it can be unit-tested against a mock AE project.
+ *
+ * After a pull every footage item is MISSING (it still points at the pusher's
+ * disk). For missing footage AE leaves `item.file` unusable and keeps the old
+ * path in `mainSource.missingFootagePath`, so that is where we read it from.
+ *
+ * Result string: "OK|relinked|failed|scanned|missing|unmatched" or "ERROR|message"
+ * @param {string} aepPath
+ * @param {Array<{o:string,n:string}>} maps  old path -> new local path
+ */
+function buildAeRelinkScript(aepPath, maps) {
+    function lit(s) {
+        return '"' + String(s).replace(/\\/g, '/').replace(/"/g, '\\"') + '"';
+    }
+
+    // AE's ExtendScript has no JSON, so pass the mappings as an array literal.
+    var mapLiteral = '[';
+    for (var i = 0; i < maps.length; i++) {
+        if (i > 0) mapLiteral += ',';
+        mapLiteral += '{o:' + lit(maps[i].o) + ',n:' + lit(maps[i].n) + '}';
+    }
+    mapLiteral += ']';
+
+    var s = [];
+    s.push('var relinked=0, failed=0, scanned=0, missing=0, unmatched=0, errorMsg="";');
+    s.push('function normP(p){ return String(p || "").replace(/\\\\/g, "/").toLowerCase(); }');
+    s.push('function baseName(p){ p = normP(p); return p.substring(p.lastIndexOf("/") + 1); }');
+    s.push('try {');
+    s.push('  var aepFile = new File(' + lit(aepPath) + ');');
+    s.push('  var alreadyOpen = false;');
+    s.push('  if (app.project && app.project.file && normP(app.project.file.fsName) === normP(aepFile.fsName)) alreadyOpen = true;');
+    // Bring AE to the front so its (unavoidable) "missing footage" warning is
+    // visible — the user clicks OK once and the relink loop below then runs.
+    s.push('  try { app.activate(); } catch (ae) {}');
+    s.push('  if (!alreadyOpen) app.open(aepFile);');
+    s.push('  try { app.activate(); } catch (ae2) {}');
+    s.push('  var maps = ' + mapLiteral + ';');
+    s.push('  var byFull = {}, byBase = {};');
+    s.push('  for (var m = 0; m < maps.length; m++) { byFull[normP(maps[m].o)] = maps[m].n; byBase[baseName(maps[m].o)] = maps[m].n; }');
+    s.push('  var seqExt = /\\.(png|jpe?g|tiff?|tga|exr|dpx|cin|psd|bmp|gif|webp)$/i;');
+    s.push('  for (var i = 1; i <= app.project.numItems; i++) {');
+    s.push('    var it = app.project.item(i);');
+    s.push('    if (!(it instanceof FootageItem)) continue;');
+    s.push('    var src = null; try { src = it.mainSource; } catch (se) {}');
+    // Solids and placeholders have no file to relink.
+    s.push('    if (!src || !(src instanceof FileSource)) continue;');
+    s.push('    scanned++;');
+    s.push('    var isMissing = false; try { isMissing = !!it.footageMissing; } catch (me) {}');
+    s.push('    if (isMissing) missing++;');
+    s.push('    var old = "";');
+    s.push('    if (isMissing) { try { old = src.missingFootagePath || ""; } catch (e1) {} }');
+    s.push('    if (!old) { try { if (it.file) old = it.file.fsName; } catch (e2) {} }');
+    s.push('    var target = old ? (byFull[normP(old)] || byBase[baseName(old)]) : null;');
+    // Last resort: AE names footage after its file by default.
+    s.push('    if (!target) target = byBase[normP(it.name)];');
+    s.push('    if (!target) { unmatched++; continue; }');
+    s.push('    if (!isMissing && old && normP(old) === normP(target)) continue;');
+    s.push('    var nf = new File(target);');
+    s.push('    if (!nf.exists) { failed++; continue; }');
+    s.push('    try {');
+    s.push('      if (src.isStill === false && seqExt.test(target)) it.replaceWithSequence(nf, false);');
+    s.push('      else it.replace(nf);');
+    s.push('      relinked++;');
+    s.push('    } catch (re) { failed++; }');
+    s.push('  }');
+    s.push('  if (relinked > 0) app.project.save();');
+    s.push('} catch (e) { errorMsg = e.message || String(e); }');
+    s.push('var resultStr = errorMsg !== "" ? ("ERROR|" + errorMsg) : ("OK|" + relinked + "|" + failed + "|" + scanned + "|" + missing + "|" + unmatched);');
+    s.push('resultStr;');
+    return s.join('\n');
+}
+
 function relinkAeFootage(aepPath, mappingJSON) {
     try {
-        var maps = JSON.parse(mappingJSON); // [{o,n}]
-
-        // Build the mappings as a JS array literal for the AE side (AE has no JSON).
-        var mapLiteral = '[';
-        for (var i = 0; i < maps.length; i++) {
-            var o = String(maps[i].o).replace(/\\/g, '/').replace(/"/g, '\\"');
-            var n = String(maps[i].n).replace(/\\/g, '/').replace(/"/g, '\\"');
-            if (i > 0) mapLiteral += ',';
-            mapLiteral += '{o:"' + o + '",n:"' + n + '"}';
-        }
-        mapLiteral += ']';
-
-        var aepFwd = aepPath.replace(/\\/g, '/').replace(/"/g, '\\"');
-
-        var aeScript = '';
-        aeScript += 'var relinked=0; var failed=0; var errorMsg="";';
-        aeScript += 'try {';
-        aeScript += 'var aepFile = new File("' + aepFwd + '");';
-        aeScript += 'var alreadyOpen=false;';
-        aeScript += 'if (app.project && app.project.file) {';
-        aeScript += '  var cur=app.project.file.fsName.replace(/\\\\/g,"/").toLowerCase();';
-        aeScript += '  if (cur===aepFile.fsName.replace(/\\\\/g,"/").toLowerCase()) alreadyOpen=true;';
-        aeScript += '}';
-        // Bring AE to the front so its (unavoidable) "missing footage" warning is
-        // visible — the user clicks OK once and the relink loop below then runs.
-        aeScript += 'try { app.activate(); } catch(ae){}';
-        aeScript += 'if (!alreadyOpen) app.open(aepFile);';
-        aeScript += 'try { app.activate(); } catch(ae2){}';
-        aeScript += 'var maps=' + mapLiteral + ';';
-        aeScript += 'function baseName(p){ p=String(p).replace(/\\\\/g,"/"); return p.substring(p.lastIndexOf("/")+1).toLowerCase(); }';
-        aeScript += 'var byFull={}; var byBase={};';
-        aeScript += 'for (var m=0;m<maps.length;m++){ var of=String(maps[m].o).replace(/\\\\/g,"/").toLowerCase(); byFull[of]=maps[m].n; byBase[baseName(maps[m].o)]=maps[m].n; }';
-        aeScript += 'for (var i=1;i<=app.project.numItems;i++){';
-        aeScript += '  var it=app.project.item(i);';
-        aeScript += '  try {';
-        aeScript += '    if (it instanceof FootageItem && it.file){';
-        aeScript += '      var cp=it.file.fsName.replace(/\\\\/g,"/").toLowerCase();';
-        aeScript += '      var target=byFull[cp]; if(!target) target=byBase[baseName(cp)];';
-        aeScript += '      if (target){ var nf=new File(target); if (nf.exists){ it.replace(nf); relinked++; } else { failed++; } }';
-        aeScript += '    }';
-        aeScript += '  } catch(le){ failed++; }';
-        aeScript += '}';
-        aeScript += 'app.project.save();';
-        aeScript += '} catch(e){ errorMsg = e.message || String(e); }';
-        aeScript += 'var resultStr = errorMsg!=="" ? ("ERROR|"+errorMsg) : ("OK|"+relinked+"|"+failed);';
-        aeScript += 'resultStr;';
+        var aeScript = buildAeRelinkScript(aepPath, JSON.parse(mappingJSON)); // [{o,n}]
 
         // Launch AE if needed (same pattern as getAEFootageFiles)
         if (!BridgeTalk.isRunning('aftereffects')) {
@@ -596,7 +625,14 @@ function relinkAeFootage(aepPath, mappingJSON) {
 
         var parts = String(btResult).split('|');
         if (parts[0] === 'ERROR') return JSON.stringify({ error: parts[1] || 'Unknown AE error', relinked: 0, failed: 0 });
-        return JSON.stringify({ relinked: parseInt(parts[1], 10) || 0, failed: parseInt(parts[2], 10) || 0, error: null });
+        return JSON.stringify({
+            relinked: parseInt(parts[1], 10) || 0,
+            failed: parseInt(parts[2], 10) || 0,
+            scanned: parseInt(parts[3], 10) || 0,
+            missing: parseInt(parts[4], 10) || 0,
+            unmatched: parseInt(parts[5], 10) || 0,
+            error: null
+        });
     } catch (e) {
         return JSON.stringify({ error: e.message, relinked: 0, failed: 0 });
     }

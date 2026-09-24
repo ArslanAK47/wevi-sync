@@ -290,17 +290,292 @@ test('three version.json agree on version/releaseDate/changelog', () => {
     });
 });
 
-/* compareVersions copied-by-contract check (mirrors update-checker semantics) */
-section('semver');
-function compareVersions(a, b) {
-    const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
-    for (let i = 0; i < 3; i++) { const na = pa[i] || 0, nb = pb[i] || 0; if (na > nb) return 1; if (na < nb) return -1; }
-    return 0;
+/* ---------------- jsx-escape ---------------- */
+section('jsx-escape');
+const JsxEscape = require('../client/js/jsx-escape.js');
+// ExtendScript parses string literals like ES3 JS, so a JS eval of the literal
+// proves the host function receives exactly the original value.
+const evalLiteral = (lit) => (0, eval)('(' + lit + ')');
+
+test('round-trips awkward Windows paths', () => {
+    [
+        "E:\\Projects\\John's Edit\\final.prproj",
+        'C:\\Users\\me\\Desktop\\new\\test\\x.mp4',
+        "D:\\a'b\\c\\\\d",
+        'E:\\clips\\"quoted"\\line\nbreak\r' + String.fromCharCode(0x2028, 0x2029),
+        'E:\\Shoots\\2028\\2029-final\\u2028.mov',
+        ''
+    ].forEach(p => assert.strictEqual(evalLiteral(JsxEscape.jsxString(p)), p));
+});
+
+test('JSON payloads survive (AE comp names / relink mappings)', () => {
+    const comps = ["Main Comp", 'Title "v2"', "Kid's \\ intro"];
+    const back = evalLiteral(JsxEscape.jsxString(JSON.stringify(comps)));
+    assert.deepStrictEqual(JSON.parse(back), comps);
+});
+
+test('null/undefined become empty string', () => {
+    assert.strictEqual(JsxEscape.jsxString(null), "''");
+    assert.strictEqual(JsxEscape.jsxString(undefined), "''");
+});
+
+test('no evalScript call hand-quotes an interpolated value', () => {
+    const jsDir = path.join(__dirname, '..', 'client', 'js');
+    fs.readdirSync(jsDir).filter(f => f.endsWith('.js')).forEach(f => {
+        fs.readFileSync(path.join(jsDir, f), 'utf8').split('\n').forEach((line, i) => {
+            if (/evalScript\(\s*`[^`]*'\$\{/.test(line)) {
+                throw new Error(`${f}:${i + 1} builds '\${...}' by hand — use JsxEscape.jsxString()`);
+            }
+        });
+    });
+});
+
+/* ---------------- ae-manifest (push side) ---------------- */
+section('ae-manifest');
+
+test('footage already queued for upload still lands in the .aep manifest list', () => {
+    const byAep = {};
+    const seen = new Set(['D:\\Shoot\\clip.mov']); // also used on the Premiere timeline
+    ['D:\\Shoot\\clip.mov', 'D:\\Shoot\\logo.png'].forEach(p => DrivePaths.addAeFootage(byAep, 'E:\\p\\fx.aep', p));
+    assert.ok(seen.has('D:\\Shoot\\clip.mov'));
+    assert.deepStrictEqual(byAep['E:\\p\\fx.aep'], ['D:\\Shoot\\clip.mov', 'D:\\Shoot\\logo.png']);
+});
+
+test('one clip used by two .aep files is listed for both; dupes ignored case-insensitively', () => {
+    const byAep = {};
+    DrivePaths.addAeFootage(byAep, 'A.aep', 'D:\\Shoot\\clip.mov');
+    DrivePaths.addAeFootage(byAep, 'A.aep', 'd:/shoot/CLIP.mov');
+    DrivePaths.addAeFootage(byAep, 'B.aep', 'D:\\Shoot\\clip.mov');
+    assert.strictEqual(byAep['A.aep'].length, 1);
+    assert.strictEqual(byAep['B.aep'].length, 1);
+});
+
+/* ---------------- ae-relink script (runs inside After Effects) ---------------- */
+section('ae-relink');
+const vm = require('vm');
+const hostCtx = vm.createContext({});
+vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'host', 'index.jsx'), 'utf8'), hostCtx);
+
+// Minimal After Effects object model: just what the relink script touches.
+function runAeRelink(maps, items, existing) {
+    const norm = p => String(p).replace(/\\/g, '/').toLowerCase();
+    const onDisk = new Set(existing.map(norm));
+    const log = { saved: false, opened: null, replaced: {}, sequences: {} };
+    class File { constructor(p) { this.fsName = String(p).replace(/\//g, '\\'); this.exists = onDisk.has(norm(p)); } }
+    class FileSource { constructor(o) { Object.assign(this, o); } }
+    class SolidSource { }
+    class FootageItem {
+        constructor(o) { Object.assign(this, o); }
+        replace(f) { log.replaced[this.name] = f.fsName; }
+        replaceWithSequence(f) { log.sequences[this.name] = f.fsName; }
+    }
+    const project = {
+        file: null,
+        get numItems() { return items.length; },
+        item(i) { return items[i - 1]; },
+        save() { log.saved = true; }
+    };
+    const ctx = vm.createContext({
+        File, FileSource, SolidSource, FootageItem,
+        app: { project, open(f) { log.opened = f.fsName; }, activate() { } }
+    });
+    // Build items with the context's classes so instanceof works inside the script.
+    items = items.map(fn => fn(ctx));
+    const script = hostCtx.buildAeRelinkScript('E:\\Pulled\\John\'s FX.aep', maps);
+    const out = vm.runInContext(script, ctx).split('|');
+    return { log, status: out[0], relinked: +out[1], failed: +out[2], scanned: +out[3], missing: +out[4], unmatched: +out[5], raw: out };
 }
+
+test('relinks MISSING footage (file is null, path only in missingFootagePath)', () => {
+    const r = runAeRelink(
+        [{ o: 'D:\\Shoot\\clip A.mov', n: 'E:\\Pulled\\external_d\\Shoot\\clip A.mov' }],
+        [c => new c.FootageItem({ name: 'clip A.mov', file: null, footageMissing: true,
+            mainSource: new c.FileSource({ missingFootagePath: 'D:\\Shoot\\clip A.mov', isStill: false }) })],
+        ['E:\\Pulled\\external_d\\Shoot\\clip A.mov']);
+    assert.strictEqual(r.status, 'OK', r.raw.join('|'));
+    assert.strictEqual(r.relinked, 1);
+    assert.strictEqual(r.missing, 1);
+    assert.strictEqual(r.log.replaced['clip A.mov'], 'E:\\Pulled\\external_d\\Shoot\\clip A.mov');
+    assert.ok(r.log.saved, 'project saved after relink');
+    assert.strictEqual(r.log.opened, "E:\\Pulled\\John's FX.aep");
+});
+
+test('basename fallback, name fallback, sequences, solids, unmatched, already-linked', () => {
+    const r = runAeRelink(
+        [
+            { o: 'C:\\Other\\Place\\logo.png', n: 'E:\\Pulled\\logo.png' },
+            { o: 'D:\\x\\bg.mov', n: 'E:\\Pulled\\bg.mov' },
+            { o: 'D:\\x\\seq_0001.png', n: 'E:\\Pulled\\seq\\seq_0001.png' },
+            { o: 'D:\\x\\ok.mov', n: 'E:\\Pulled\\ok.mov' },
+            { o: 'D:\\x\\gone.mov', n: 'E:\\Pulled\\gone.mov' }
+        ],
+        [
+            // different folder than the manifest -> basename match
+            c => new c.FootageItem({ name: 'logo.png', file: null, footageMissing: true,
+                mainSource: new c.FileSource({ missingFootagePath: 'Z:\\old\\logo.png', isStill: true }) }),
+            // no path at all -> item name match
+            c => new c.FootageItem({ name: 'bg.mov', file: null, footageMissing: true,
+                mainSource: new c.FileSource({ missingFootagePath: '', isStill: false }) }),
+            // image sequence
+            c => new c.FootageItem({ name: 'seq_[0001-0100].png', file: null, footageMissing: true,
+                mainSource: new c.FileSource({ missingFootagePath: 'D:\\x\\seq_0001.png', isStill: false }) }),
+            // solid -> ignored entirely
+            c => new c.FootageItem({ name: 'Black Solid 1', file: null, footageMissing: false, mainSource: new c.SolidSource() }),
+            // not in manifest -> unmatched
+            c => new c.FootageItem({ name: 'stranger.mov', file: null, footageMissing: true,
+                mainSource: new c.FileSource({ missingFootagePath: 'D:\\x\\stranger.mov', isStill: false }) }),
+            // already linked to the target -> untouched
+            c => new c.FootageItem({ name: 'ok.mov', file: new c.File('E:\\Pulled\\ok.mov'), footageMissing: false,
+                mainSource: new c.FileSource({ isStill: false }) }),
+            // matched but the file never downloaded -> failed
+            c => new c.FootageItem({ name: 'gone.mov', file: null, footageMissing: true,
+                mainSource: new c.FileSource({ missingFootagePath: 'D:\\x\\gone.mov', isStill: false }) })
+        ],
+        ['E:\\Pulled\\logo.png', 'E:\\Pulled\\bg.mov', 'E:\\Pulled\\seq\\seq_0001.png', 'E:\\Pulled\\ok.mov']);
+    assert.strictEqual(r.status, 'OK', r.raw.join('|'));
+    assert.strictEqual(r.log.replaced['logo.png'], 'E:\\Pulled\\logo.png');
+    assert.strictEqual(r.log.replaced['bg.mov'], 'E:\\Pulled\\bg.mov');
+    assert.strictEqual(r.log.sequences['seq_[0001-0100].png'], 'E:\\Pulled\\seq\\seq_0001.png');
+    assert.strictEqual(r.log.replaced['ok.mov'], undefined);
+    assert.deepStrictEqual(
+        { relinked: r.relinked, failed: r.failed, scanned: r.scanned, missing: r.missing, unmatched: r.unmatched },
+        { relinked: 3, failed: 1, scanned: 6, missing: 5, unmatched: 1 });
+});
+
+test('nothing missing -> no relink and no save', () => {
+    const r = runAeRelink(
+        [{ o: 'D:\\x\\ok.mov', n: 'E:\\Pulled\\ok.mov' }],
+        [c => new c.FootageItem({ name: 'ok.mov', file: new c.File('E:\\Pulled\\ok.mov'), footageMissing: false,
+            mainSource: new c.FileSource({ isStill: false }) })],
+        ['E:\\Pulled\\ok.mov']);
+    assert.deepStrictEqual([r.relinked, r.missing, r.log.saved], [0, 0, false]);
+});
+
+/* ---------------- update-core (auto-updater) ---------------- */
+section('update-core');
+const UpdateCore = require('../client/js/update-core.js');
+const crypto = require('crypto');
+const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+
 test('compareVersions', () => {
-    assert.strictEqual(compareVersions('1.5.4', '1.5.3'), 1);
-    assert.strictEqual(compareVersions('1.5.3', '1.5.3'), 0);
-    assert.strictEqual(compareVersions('1.4.9', '1.5.0'), -1);
+    assert.strictEqual(UpdateCore.compareVersions('1.5.4', '1.5.3'), 1);
+    assert.strictEqual(UpdateCore.compareVersions('1.5.3', '1.5.3'), 0);
+    assert.strictEqual(UpdateCore.compareVersions('1.4.9', '1.5.0'), -1);
+    assert.strictEqual(UpdateCore.compareVersions('1.6.10', '1.6.9'), 1);
+});
+
+test('bumpVersion patch/minor/major/explicit', () => {
+    assert.strictEqual(UpdateCore.bumpVersion('1.6.3', 'patch'), '1.6.4');
+    assert.strictEqual(UpdateCore.bumpVersion('1.6.3', 'minor'), '1.7.0');
+    assert.strictEqual(UpdateCore.bumpVersion('1.6.3', 'major'), '2.0.0');
+    assert.strictEqual(UpdateCore.bumpVersion('1.6.3', '1.9.0'), '1.9.0');
+    assert.throws(() => UpdateCore.bumpVersion('1.6.3', 'huge'));
+});
+
+test('parseManifest accepts valid, drops reserved files', () => {
+    const files = UpdateCore.parseManifest({ files: [
+        { path: 'client/js/main.js', size: 3, sha256: sha('abc') },
+        { path: 'version.json', size: 1, sha256: sha('x') }
+    ] });
+    assert.deepStrictEqual(files.map(f => f.path), ['client/js/main.js']);
+});
+
+test('parseManifest rejects path traversal, absolute and backslash paths', () => {
+    for (const bad of ['../evil.js', '/abs.js', 'C:/x.js', 'client\\x.js', 'a//b.js', 'a/./b.js']) {
+        assert.throws(() => UpdateCore.parseManifest({ files: [{ path: bad, size: 1, sha256: sha('a') }] }), /unsafe/, bad);
+    }
+});
+
+test('parseManifest rejects missing hashes, duplicates and empty lists', () => {
+    assert.throws(() => UpdateCore.parseManifest({ files: [{ path: 'a.js', size: 1 }] }), /sha256/);
+    assert.throws(() => UpdateCore.parseManifest({ files: [
+        { path: 'a.js', size: 1, sha256: sha('a') }, { path: 'a.js', size: 1, sha256: sha('a') }] }), /twice/);
+    assert.throws(() => UpdateCore.parseManifest({ files: [] }), /no files/);
+    assert.throws(() => UpdateCore.parseManifest(null), /malformed/);
+});
+
+test('verifyEntry catches size and checksum mismatches', () => {
+    const e = { path: 'a.js', size: 3, sha256: sha('abc') };
+    assert.strictEqual(UpdateCore.verifyEntry(e, 3, sha('abc')), null);
+    assert.match(UpdateCore.verifyEntry(e, 4, sha('abcd')), /size/);
+    assert.match(UpdateCore.verifyEntry(e, 3, sha('abd')), /checksum/);
+});
+
+test('removedPaths only deletes files we shipped before', () => {
+    const oldE = [{ path: 'client/js/old.js' }, { path: 'client/js/main.js' }, { path: 'version.json' }];
+    const newE = [{ path: 'client/js/main.js' }];
+    assert.deepStrictEqual(UpdateCore.removedPaths(oldE, newE), ['client/js/old.js']);
+    assert.deepStrictEqual(UpdateCore.removedPaths([], newE), []);
+});
+
+test('hostFilesChanged flags ExtendScript/manifest changes only', () => {
+    assert.strictEqual(UpdateCore.hostFilesChanged([{ path: 'client/js/main.js' }]), false);
+    assert.strictEqual(UpdateCore.hostFilesChanged([{ path: 'host/index.jsx' }]), true);
+});
+
+test('committed dist/ matches its files.json (what editors will download)', () => {
+    const distExt = path.join(__dirname, '..', '..', 'dist', 'premiere-extension');
+    const mf = path.join(distExt, 'files.json');
+    if (!fs.existsSync(mf)) return; // first release creates it
+    const manifest = JSON.parse(fs.readFileSync(mf, 'utf8'));
+    const entries = UpdateCore.parseManifest(manifest);
+    for (const e of entries) {
+        const buf = fs.readFileSync(path.join(distExt, e.path));
+        assert.strictEqual(UpdateCore.verifyEntry(e, buf.length, sha(buf)), null, e.path);
+    }
+    const distVersion = JSON.parse(fs.readFileSync(path.join(distExt, 'version.json'), 'utf8')).version;
+    assert.strictEqual(manifest.version, distVersion, 'files.json version matches dist version.json');
+});
+
+/* ---------------- telemetry (admin view) ---------------- */
+section('telemetry');
+const Telemetry = require('../client/js/telemetry.js');
+
+test('redact strips OAuth tokens, secrets and auth headers', () => {
+    const raw = [
+        'Authorization: Bearer ya29.a0AfH6SMBx-abc_def',
+        '{"access_token":"ya29.zzz","refresh_token":"1//0gAbCdEfGhIjKlMnOpQrStUv","expires_in":3599}',
+        'POST body client_secret=GOCSPX-abcDEF123_x&code=4/0AbcDef&grant_type=authorization_code',
+        'https://oauth2.googleapis.com/revoke?token=ya29.qqq'
+    ].join('\n');
+    const out = Telemetry.redact(raw);
+    assert.ok(!/ya29\./.test(out), out);
+    assert.ok(!/GOCSPX-abc/.test(out), out);
+    assert.ok(!/1\/\/0gAbCd/.test(out), out);
+    assert.ok(!/code=4\//.test(out), out);
+    assert.ok(/expires_in/.test(out), 'non-secret fields survive');
+});
+
+test('trimLog keeps the newest lines, clips giant ones, redacts', () => {
+    const lines = [];
+    for (let i = 0; i < 50; i++) lines.push('line ' + i);
+    lines.push('x'.repeat(5000));
+    lines.push('Bearer ya29.secret');
+    const out = Telemetry.trimLog(lines, 10);
+    assert.strictEqual(out.length, 10);
+    assert.strictEqual(out[0], 'line 42');
+    assert.ok(out[8].length < 2100 && /clipped/.test(out[8]));
+    assert.strictEqual(out[9], 'Bearer [REDACTED]');
+});
+
+test('buildSnapshot shape + redacted lastError', () => {
+    const snap = Telemetry.buildSnapshot({ email: 'ed@x.com', extensionVersion: '1.7.0', lastError: 'Bearer ya29.abc failed', log: ['a'], now: '2026-01-01T00:00:00Z' });
+    assert.strictEqual(snap.schema, 1);
+    assert.strictEqual(snap.email, 'ed@x.com');
+    assert.strictEqual(snap.extensionVersion, '1.7.0');
+    assert.strictEqual(snap.lastSeen, '2026-01-01T00:00:00Z');
+    assert.ok(!/ya29/.test(snap.lastError));
+    assert.deepStrictEqual(snap.log, ['a']);
+});
+
+test('isAdminEmail is case/space-insensitive and rejects empty', () => {
+    assert.strictEqual(Telemetry.isAdminEmail(' Boss@Gmail.com ', ['boss@gmail.com']), true);
+    assert.strictEqual(Telemetry.isAdminEmail('editor@gmail.com', ['boss@gmail.com']), false);
+    assert.strictEqual(Telemetry.isAdminEmail('', ['']), false);
+});
+
+test('telemetryFileName is stable and filesystem-safe', () => {
+    assert.strictEqual(Telemetry.telemetryFileName('Ed.One+x@Gmail.com'), 'TeamSync-Telemetry-ed.one_x@gmail.com.json');
 });
 
 /* ---------------- summary ---------------- */

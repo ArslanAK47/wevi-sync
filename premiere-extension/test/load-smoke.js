@@ -13,9 +13,9 @@ const jsDir = path.join(__dirname, '..', 'client', 'js');
 
 // Scripts in the exact order index.html loads them (CSInterface is stubbed below).
 const ORDER = [
-    'config.js', 'google-config.js', 'drive-errors.js', 'project-id.js', 'drive-paths.js',
+    'config.js', 'google-config.js', 'drive-errors.js', 'jsx-escape.js', 'project-id.js', 'drive-paths.js',
     'google-drive.js', 'sync.js', 'upload-helper.js', 'download-helper.js', 'upload-xhr.js',
-    'update-checker.js', 'main.js'
+    'update-core.js', 'telemetry.js', 'update-checker.js', 'main.js'
 ];
 
 function fakeEl() {
@@ -69,6 +69,8 @@ const sandbox = {
         };
     }
 };
+sandbox.addEventListener = function () {};
+sandbox.removeEventListener = function () {};
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 sandbox.self = sandbox;

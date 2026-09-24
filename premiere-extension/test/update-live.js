@@ -73,10 +73,25 @@ async function listTree(apiUrl, acc) {
             console.log('   OK ' + f.path + ' (' + buf.length + ' bytes)');
         }
 
-        console.log('\nRATE-LIMIT NOTE: the unauthenticated GitHub Contents API used above is limited to');
-        console.log('60 requests/hour and made ' + apiCalls + ' calls (one per directory). The Git Trees API');
-        console.log('(/git/trees/main?recursive=1) returns the whole tree in ONE request — recommended switch.');
-        const remaining = null;
+        console.log('4) files.json manifest (what v1.7.0+ panels install from)');
+        let manifest = null;
+        try {
+            manifest = JSON.parse((await get(RAW_BASE + '/files.json?t=' + Date.now(), false)).buf.toString('utf8'));
+        } catch (e) {
+            console.log('   (no files.json yet: published before v1.7.0; panels fall back to the Contents API)');
+        }
+        if (manifest) {
+            const UpdateCore = require('../client/js/update-core.js');
+            const crypto = require('crypto');
+            if (manifest.version !== remote.version) throw new Error(`files.json is v${manifest.version} but version.json is v${remote.version}`);
+            const entries = UpdateCore.parseManifest(manifest);
+            for (const e of entries) {
+                const { buf } = await get(RAW_BASE + '/' + e.path.split('/').map(encodeURIComponent).join('/') + '?t=' + Date.now(), false);
+                const problem = UpdateCore.verifyEntry(e, buf.length, crypto.createHash('sha256').update(buf).digest('hex'));
+                if (problem) throw new Error(e.path + ': ' + problem);
+            }
+            console.log('   OK: all ' + entries.length + ' files match their sha256 on GitHub');
+        }
     } catch (e) {
         ok = false;
         console.error('\nLIVE UPDATE TEST FAILED: ' + e.message);

@@ -574,7 +574,7 @@ const testSuites = {
                     'btn-google-connect',
                     'btn-settings',
                     'btn-push',
-                    'update-banner',
+                    'update-check-failed',
                     'modal-settings',
                     'projects-list',
                     'debug-panel'
@@ -622,16 +622,15 @@ const testSuites = {
                 }
             },
 
-            testUpdateBanner: async () => {
-                TestSuite.log('Testing update banner functionality', 'test');
+            testUpdateGate: async () => {
+                TestSuite.log('Testing update gate wiring', 'test');
                 try {
-                    const banner = document.getElementById('update-banner');
-                    TestSuite.assertNotNull(banner, 'Update banner should exist');
-
-                    TestSuite.assertNotNull(typeof dismissUpdate, 'dismissUpdate should exist');
-                    TestSuite.assertNotNull(typeof performAutoUpdate, 'performAutoUpdate should exist');
+                    TestSuite.assert(typeof performAutoUpdate === 'function', 'performAutoUpdate should exist');
+                    TestSuite.assert(typeof checkForUpdates === 'function', 'checkForUpdates should exist');
+                    TestSuite.assert(typeof UpdateCore === 'object', 'UpdateCore should be loaded');
+                    TestSuite.assert(typeof Telemetry === 'object', 'Telemetry should be loaded');
                 } catch (e) {
-                    TestSuite.assert(false, 'Update banner test should not throw', e.message);
+                    TestSuite.assert(false, 'Update gate test should not throw', e.message);
                 }
             }
         }

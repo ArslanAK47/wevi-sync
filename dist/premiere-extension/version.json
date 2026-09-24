@@ -1,6 +1,6 @@
 {
-    "version": "1.6.3",
-    "releaseDate": "2026-06-10",
-    "changelog": "Project file now shows Synced correctly after Update (no more endless 'Modified'). Pushing a project that already exists offers 'Create New' to keep files separate. Team list and Drive folders now show who pushed last and when.",
+    "version": "1.7.0",
+    "releaseDate": "2026-09-24",
+    "changelog": "y",
     "downloadUrl": "https://raw.githubusercontent.com/ArslanAK47/wevi-sync/main/dist/premiere-extension"
 }

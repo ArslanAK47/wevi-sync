@@ -1,18 +1,20 @@
 /**
- * Auto-Update Checker for Team Sync Extension
- *
- * Features:
- * - Checks GitHub (or local test server) for newer versions on startup
- * - Shows popup modal when update available
- * - Supports local testing mode for development
- * - One-click update with progress tracking
- * - Force check for updates button in settings
+ * Auto-Update for Team Sync Extension
  *
  * Flow:
- * 1. On startup, read local version.json
- * 2. Fetch remote version.json from configured source
- * 3. Compare versions. If remote > local, show update modal
- * 4. On "Update Now", download all files and overwrite
+ * 1. Read local version.json; fetch remote version.json (GitHub raw, cache-busted).
+ * 2. Checked on startup, every 30 min, and when the panel regains focus (≥5 min apart).
+ * 3. Newer version → MANDATORY full-panel gate (no "Later"). If a push/pull is
+ *    running, the gate waits until it finishes.
+ * 4. Update Now → download every file listed in dist files.json into a staging
+ *    folder, verify size + sha256, and only when ALL files pass copy them into
+ *    place. version.json is written LAST, so a failed/partial update is never
+ *    mistaken for a finished one and the gate re-appears.
+ * 5. A failed CHECK (offline, GitHub down) never blocks work: a small warning
+ *    banner with Retry is shown instead.
+ *
+ * Releases are published with release.bat (scripts/release.js) which bumps the
+ * version, builds dist/, writes files.json and pushes.
  */
 
 const UPDATE_CONFIG = {
@@ -25,23 +27,30 @@ const UPDATE_CONFIG = {
     // Local testing server (for development)
     local: {
         versionUrl: 'http://localhost:8888/version.json',
-        repoBaseUrl: 'http://localhost:8888/files.json', // Returns file list in same format
+        repoBaseUrl: 'http://localhost:8888/files.json', // legacy file list (no hashes)
         rawBaseUrl: 'http://localhost:8888/files'
     },
     // Active mode: 'remote' or 'local'
     mode: 'remote',
-    // Check interval (milliseconds) - 0 = only on startup
-    checkInterval: 0,
-    // Startup delay before first check
+    checkInterval: 30 * 60 * 1000,
+    focusCheckMinGap: 5 * 60 * 1000,
     startupDelay: 3000,
-    // Show update notifications
     enabled: true
 };
 
-// State
-let updateCheckInProgress = false;
-let lastUpdateCheck = null;
+// State (UpdateState is read by the settings panel, telemetry and the admin view)
+const UpdateState = {
+    status: 'idle',        // idle | checking | up-to-date | available | failed | updating | installed
+    localVersion: null,
+    latestVersion: null,
+    lastCheckedAt: null,
+    error: ''
+};
+window.UpdateState = UpdateState;
+
+let updateCheckInProgress = null;
 let availableUpdate = null;
+let gateWaitTimer = null;
 
 /**
  * Get active update URLs based on current mode
@@ -125,34 +134,22 @@ function browserFetchGet(url) {
 async function fetchRemoteText(url) {
     const errors = [];
 
-    // Method 1: XMLHttpRequest (most reliable in CEP)
     try {
-        console.log('[Update] Trying XMLHttpRequest for:', url);
-        const result = await xhrGet(url);
-        console.log('[Update] XMLHttpRequest succeeded');
-        return result;
+        return await xhrGet(url);
     } catch (e) {
         console.warn('[Update] XMLHttpRequest failed:', e.message);
         errors.push('XHR: ' + e.message);
     }
 
-    // Method 2: Node.js https
     try {
-        console.log('[Update] Trying Node.js https...');
-        const result = await nodeHttpGet(url);
-        console.log('[Update] Node.js https succeeded');
-        return result;
+        return await nodeHttpGet(url);
     } catch (e) {
         console.warn('[Update] Node.js https failed:', e.message);
         errors.push('Node: ' + e.message);
     }
 
-    // Method 3: browser fetch
     try {
-        console.log('[Update] Trying browser fetch...');
-        const result = await browserFetchGet(url);
-        console.log('[Update] Browser fetch succeeded');
-        return result;
+        return await browserFetchGet(url);
     } catch (e) {
         console.warn('[Update] Browser fetch failed:', e.message);
         errors.push('Fetch: ' + e.message);
@@ -165,12 +162,16 @@ async function fetchRemoteText(url) {
  * Show notification to user (info or error)
  */
 function showNotification(message, type) {
-    const isError = type === 'error';
+    const colors = {
+        error: ['#4a2d2d', '#ff6b6b'],
+        success: ['#2d4a3e', '#51cf66'],
+        info: ['#2d3a4a', '#6bb5ff']
+    }[type] || ['#2d3a4a', '#6bb5ff'];
     const notification = document.createElement('div');
-    notification.innerHTML = `<span>${message}</span>`;
+    notification.textContent = message;
     notification.style.cssText = `
         position: fixed; bottom: 20px; right: 20px;
-        background: ${isError ? '#4a2d2d' : '#2d3a4a'}; color: ${isError ? '#ff6b6b' : '#6bb5ff'};
+        background: ${colors[0]}; color: ${colors[1]};
         padding: 12px 20px; border-radius: 8px;
         box-shadow: 0 4px 12px rgba(0,0,0,0.3);
         z-index: 10000; max-width: 400px; font-size: 12px;
@@ -180,10 +181,8 @@ function showNotification(message, type) {
     setTimeout(() => {
         notification.style.animation = 'slideOut 0.3s ease';
         setTimeout(() => notification.remove(), 300);
-    }, 6000);
+    }, type === 'success' ? 3000 : 6000);
 }
-
-function showErrorNotification(message) { showNotification(message, 'error'); }
 
 /**
  * Switch between local and remote update sources (for testing)
@@ -192,7 +191,6 @@ function setUpdateMode(mode) {
     if (mode === 'local' || mode === 'remote') {
         UPDATE_CONFIG.mode = mode;
         console.log(`🔧 Update mode set to: ${mode}`);
-        // Save preference
         try {
             localStorage.setItem('update_mode', mode);
         } catch (e) { }
@@ -202,9 +200,6 @@ function setUpdateMode(mode) {
 }
 window.setUpdateMode = setUpdateMode;
 
-/**
- * Get current update mode
- */
 function getUpdateMode() {
     return UPDATE_CONFIG.mode;
 }
@@ -218,7 +213,6 @@ function loadUpdateMode() {
     try {
         const saved = localStorage.getItem('update_mode');
         if (saved === 'local') {
-            // Local mode should only be active if test server is running
             console.log('[Update] Found saved mode: local - resetting to remote for production');
             localStorage.removeItem('update_mode');
             UPDATE_CONFIG.mode = 'remote';
@@ -227,22 +221,6 @@ function loadUpdateMode() {
         }
     } catch (e) { }
     console.log('[Update] Active mode:', UPDATE_CONFIG.mode);
-}
-
-/**
- * Compare two semver version strings
- * Returns: 1 if a > b, -1 if a < b, 0 if equal
- */
-function compareVersions(a, b) {
-    const pa = a.split('.').map(Number);
-    const pb = b.split('.').map(Number);
-    for (let i = 0; i < 3; i++) {
-        const na = pa[i] || 0;
-        const nb = pb[i] || 0;
-        if (na > nb) return 1;
-        if (na < nb) return -1;
-    }
-    return 0;
 }
 
 /**
@@ -260,13 +238,7 @@ function getExtensionRoot() {
         // On Windows: /C:/Users/... → remove leading slash
         const htmlPath = process.platform === 'win32' ? htmlUrl.replace(/^\//, '') : htmlUrl;
         const clientDir = path.dirname(htmlPath); // <ext>/client/
-        const extRoot = path.dirname(clientDir);   // <ext>/
-        console.log('Extension root (window.location):', extRoot);
-        if (fs.existsSync(path.join(extRoot, 'version.json'))) {
-            return extRoot;
-        }
-        // Even if version.json missing, this path is still correct
-        return extRoot;
+        return path.dirname(clientDir);           // <ext>/
     } catch (e) {
         console.warn('window.location method failed:', e.message);
     }
@@ -276,30 +248,19 @@ function getExtensionRoot() {
         const csInterface = new CSInterface();
         const extPath = csInterface.getSystemPath('extension');
         if (extPath && extPath.length > 0) {
-            // CSInterface may return path with file:/// prefix or Unix-style on Windows
             let cleanPath = extPath.replace(/^file:\/\/\//, '').replace(/^file:\/\//, '');
-            cleanPath = decodeURIComponent(cleanPath);
-            console.log('Extension root (CSInterface):', cleanPath);
-            return cleanPath;
+            return decodeURIComponent(cleanPath);
         }
     } catch (e) { }
 
     // Method 3: Try __dirname with various offsets
     try {
-        const candidates = [
-            path.resolve(__dirname, '../'),
-            path.resolve(__dirname, '../../'),
-            __dirname
-        ];
+        const candidates = [path.resolve(__dirname, '../'), path.resolve(__dirname, '../../'), __dirname];
         for (const candidate of candidates) {
-            if (fs.existsSync(path.join(candidate, 'version.json'))) {
-                console.log('Extension root (__dirname probe):', candidate);
-                return candidate;
-            }
+            if (fs.existsSync(path.join(candidate, 'version.json'))) return candidate;
         }
     } catch (e) { }
 
-    // Last resort
     console.warn('Could not determine extension root');
     return path.resolve(__dirname, '../');
 }
@@ -311,25 +272,11 @@ function getLocalVersion() {
     try {
         const fs = require('fs');
         const path = require('path');
-
-        const extensionRoot = getExtensionRoot();
-        const versionFile = path.join(extensionRoot, 'version.json');
-        console.log('Looking for version.json at:', versionFile);
-
+        const versionFile = path.join(getExtensionRoot(), 'version.json');
         if (fs.existsSync(versionFile)) {
-            const data = JSON.parse(fs.readFileSync(versionFile, 'utf8'));
-            console.log('Local version found:', data.version);
-            return data;
-        } else {
-            console.warn('version.json NOT FOUND at:', versionFile);
-            // Debug: list what IS in the extension root
-            try {
-                const files = fs.readdirSync(extensionRoot);
-                console.log('Files in extension root:', files.join(', '));
-            } catch (e2) {
-                console.warn('Cannot list extension root:', e2.message);
-            }
+            return JSON.parse(fs.readFileSync(versionFile, 'utf8'));
         }
+        console.warn('version.json NOT FOUND at:', versionFile);
     } catch (e) {
         console.warn('Could not read local version:', e.message);
     }
@@ -337,385 +284,447 @@ function getLocalVersion() {
 }
 window.getLocalVersion = getLocalVersion;
 
+function isSyncBusy() {
+    try {
+        return (typeof isPushing !== 'undefined' && isPushing) || (typeof isPulling !== 'undefined' && isPulling);
+    } catch (e) {
+        return false;
+    }
+}
+
+function noteTelemetry(fields) {
+    if (typeof Telemetry !== 'undefined') Telemetry.noteUpdate(fields);
+}
+
 /**
- * Check for updates (can be called manually or on startup)
- * @param {boolean} showNoUpdateMessage - Show message if no update available
- * @returns {Promise<{hasUpdate: boolean, version?: string, changelog?: string}>}
+ * Check for updates (startup, interval, focus, or the Settings button)
+ * @param {boolean} manual - Show feedback toasts (Settings → Check for Updates)
+ * @returns {Promise<{hasUpdate: boolean, version?: string, error?: string}>}
  */
-async function checkForUpdates(showNoUpdateMessage = false) {
-    if (updateCheckInProgress) {
-        console.log('Update check already in progress, resetting...');
-        // Don't block forever - reset and proceed
-        updateCheckInProgress = false;
-    }
+function checkForUpdates(manual = false) {
+    if (!UPDATE_CONFIG.enabled) return Promise.resolve({ hasUpdate: false });
+    if (UpdateState.status === 'updating') return Promise.resolve({ hasUpdate: true, version: UpdateState.latestVersion });
+    if (updateCheckInProgress) return updateCheckInProgress;
 
-    if (!UPDATE_CONFIG.enabled) {
-        console.log('Update checks are disabled');
-        return { hasUpdate: false };
-    }
+    updateCheckInProgress = runUpdateCheck(manual).finally(() => { updateCheckInProgress = null; });
+    return updateCheckInProgress;
+}
+window.checkForUpdates = checkForUpdates;
 
-    updateCheckInProgress = true;
-    lastUpdateCheck = new Date();
-
-    // Show immediate feedback when manually triggered
-    if (showNoUpdateMessage) {
-        showErrorNotification('Checking for updates...');
-    }
+async function runUpdateCheck(manual) {
+    if (manual) showNotification('Checking for updates...', 'info');
+    UpdateState.status = 'checking';
+    renderUpdateStatus();
 
     try {
-        const localData = getLocalVersion();
-        const localVersion = localData.version || '0.0.0';
-        console.log(`🔄 Current extension version: v${localVersion}`);
-        console.log(`📡 Update mode: ${UPDATE_CONFIG.mode}`);
+        const localVersion = getLocalVersion().version || '0.0.0';
+        UpdateState.localVersion = localVersion;
 
         const urls = getUpdateUrls();
-        console.log(`📡 Fetching: ${urls.versionUrl}`);
-
-        // Fetch remote version (tries Node.js https, then browser fetch)
         const remoteText = await fetchRemoteText(urls.versionUrl + '?t=' + Date.now());
-        console.log('Remote response:', remoteText.substring(0, 200));
         const remoteData = JSON.parse(remoteText);
         const remoteVersion = remoteData.version;
-        console.log(`📡 Latest version available: v${remoteVersion}`);
+        if (!remoteVersion) throw new Error('Remote version.json has no version');
 
-        if (compareVersions(remoteVersion, localVersion) > 0) {
-            // New version available!
+        UpdateState.latestVersion = remoteVersion;
+        UpdateState.lastCheckedAt = new Date().toISOString();
+        UpdateState.error = '';
+        hideCheckFailedBanner();
+
+        if (UpdateCore.compareVersions(remoteVersion, localVersion) > 0) {
             console.log(`🔔 Update available: v${localVersion} → v${remoteVersion}`);
-
             availableUpdate = {
                 currentVersion: localVersion,
                 newVersion: remoteVersion,
                 changelog: remoteData.changelog || '',
                 releaseDate: remoteData.releaseDate || '',
-                downloadUrl: remoteData.downloadUrl || ''
+                downloadUrl: remoteData.downloadUrl || '',
+                versionData: remoteData
             };
-
-            // Show update modal
-            showUpdateModal(availableUpdate);
-
-            // Also show banner as fallback
-            showUpdateBanner(remoteVersion, remoteData.changelog || '');
-
-            updateCheckInProgress = false;
+            UpdateState.status = 'available';
+            renderUpdateStatus();
+            noteTelemetry({ lastCheckAt: UpdateState.lastCheckedAt, lastCheckResult: 'update available: v' + remoteVersion });
+            showUpdateGateWhenIdle();
             return { hasUpdate: true, version: remoteVersion, changelog: remoteData.changelog };
-        } else {
-            console.log('✅ Extension is up to date');
-            availableUpdate = null;
-
-            if (showNoUpdateMessage) {
-                showNoUpdateNotification(localVersion);
-            }
-
-            updateCheckInProgress = false;
-            return { hasUpdate: false, version: localVersion };
         }
+
+        console.log(`✅ Extension is up to date (v${localVersion})`);
+        availableUpdate = null;
+        UpdateState.status = 'up-to-date';
+        renderUpdateStatus();
+        noteTelemetry({ lastCheckAt: UpdateState.lastCheckedAt, lastCheckResult: 'up to date' });
+        if (manual) showNotification(`✅ You're up to date! (v${localVersion})`, 'success');
+        return { hasUpdate: false, version: localVersion };
     } catch (e) {
         console.error('❌ Update check FAILED:', e.message);
-        updateCheckInProgress = false;
-        if (showNoUpdateMessage) {
-            showErrorNotification('Update check failed: ' + e.message);
-        }
+        UpdateState.status = 'failed';
+        UpdateState.error = e.message;
+        UpdateState.lastCheckedAt = new Date().toISOString();
+        renderUpdateStatus();
+        showCheckFailedBanner(e.message);
+        noteTelemetry({ lastCheckAt: UpdateState.lastCheckedAt, lastCheckResult: 'failed: ' + e.message });
+        if (manual) showNotification('Update check failed: ' + e.message, 'error');
         return { hasUpdate: false, error: e.message };
     }
 }
-window.checkForUpdates = checkForUpdates;
 
-/**
- * Show update available modal (more prominent than banner)
- */
-function showUpdateModal(updateInfo) {
-    // Check if modal exists, create if not
-    let modal = document.getElementById('modal-update-available');
-    if (!modal) {
-        modal = createUpdateModal();
-        document.body.appendChild(modal);
+/* ============================================
+   MANDATORY UPDATE GATE
+   ============================================ */
+
+function showUpdateGateWhenIdle() {
+    if (!availableUpdate) return;
+    if (isSyncBusy()) {
+        // Never interrupt a push/pull. Poll until it's done, then block.
+        if (!gateWaitTimer) {
+            console.log('[Update] Sync in progress — update screen will appear when it finishes');
+            gateWaitTimer = setInterval(() => {
+                if (!isSyncBusy()) {
+                    clearInterval(gateWaitTimer);
+                    gateWaitTimer = null;
+                    showUpdateGate();
+                }
+            }, 5000);
+        }
+        return;
     }
-
-    // Populate modal content
-    const versionEl = document.getElementById('update-modal-version');
-    const changelogEl = document.getElementById('update-modal-changelog');
-    const releaseDateEl = document.getElementById('update-modal-date');
-    const currentVersionEl = document.getElementById('update-modal-current');
-
-    if (versionEl) versionEl.textContent = `v${updateInfo.newVersion}`;
-    if (currentVersionEl) currentVersionEl.textContent = `v${updateInfo.currentVersion}`;
-    if (releaseDateEl) releaseDateEl.textContent = updateInfo.releaseDate || 'Recently';
-    if (changelogEl) {
-        changelogEl.textContent = updateInfo.changelog || 'Bug fixes and improvements';
-    }
-
-    // Show modal
-    modal.classList.remove('hidden');
+    showUpdateGate();
 }
 
-/**
- * Create the update modal HTML
- */
-function createUpdateModal() {
-    const modal = document.createElement('div');
-    modal.id = 'modal-update-available';
-    modal.className = 'modal';
-    modal.innerHTML = `
-        <div class="modal-content update-modal-content">
-            <div class="modal-header">
-                <h3>🎉 Update Available!</h3>
-                <button class="modal-close" onclick="closeUpdateModal()">&times;</button>
+function getUpdateGate() {
+    let gate = document.getElementById('update-gate');
+    if (gate) return gate;
+
+    gate = document.createElement('div');
+    gate.id = 'update-gate';
+    gate.className = 'update-gate hidden';
+    gate.innerHTML = `
+        <div class="update-gate-card">
+            <div class="update-gate-icon">⬆️</div>
+            <h2>Update required</h2>
+            <p class="update-gate-sub">A new version of Team Sync is out. Install it to keep using the panel.</p>
+            <div class="version-badge">
+                <span class="version-current" id="update-gate-current">v0.0.0</span>
+                <span class="version-arrow">→</span>
+                <span class="version-new" id="update-gate-new">v0.0.0</span>
             </div>
-            <div class="update-modal-body">
-                <div class="update-version-info">
-                    <div class="version-badge">
-                        <span class="version-current" id="update-modal-current">v1.0.0</span>
-                        <span class="version-arrow">→</span>
-                        <span class="version-new" id="update-modal-version">v1.1.0</span>
-                    </div>
-                    <div class="release-date" id="update-modal-date">Released: Recently</div>
-                </div>
-                <div class="changelog-section">
-                    <h4>What's New:</h4>
-                    <p class="changelog-text" id="update-modal-changelog">Bug fixes and improvements</p>
-                </div>
-                <div class="update-progress-section hidden" id="update-modal-progress">
-                    <div class="progress-bar-container">
-                        <div id="update-modal-progress-fill" class="progress-bar-fill" style="width: 0%"></div>
-                    </div>
-                    <span id="update-modal-status">Preparing update...</span>
-                </div>
+            <div class="changelog-section">
+                <h4>What's new</h4>
+                <p class="changelog-text" id="update-gate-changelog"></p>
             </div>
-            <div class="modal-actions update-modal-actions">
-                <button class="btn btn-secondary" onclick="closeUpdateModal()">Later</button>
-                <button class="btn btn-primary" id="btn-modal-update" onclick="performAutoUpdate()">
-                    ⬇️ Update Now
-                </button>
+            <div class="update-progress-section hidden" id="update-gate-progress">
+                <div class="progress-bar-container">
+                    <div id="update-gate-progress-fill" class="progress-bar-fill" style="width: 0%"></div>
+                </div>
+                <span id="update-gate-status">Preparing update...</span>
+            </div>
+            <p class="update-gate-error hidden" id="update-gate-error"></p>
+            <div class="update-gate-actions">
+                <button class="btn btn-secondary btn-small hidden" id="btn-gate-copy-log">📋 Copy debug log</button>
+                <button class="btn btn-primary" id="btn-gate-update">⬇️ Update Now</button>
             </div>
         </div>
     `;
-
-    // Close on backdrop click
-    modal.addEventListener('click', (e) => {
-        if (e.target === modal) closeUpdateModal();
-    });
-
-    return modal;
+    document.body.appendChild(gate);
+    document.getElementById('btn-gate-update').addEventListener('click', onGatePrimaryClick);
+    document.getElementById('btn-gate-copy-log').addEventListener('click', copyLogForSupport);
+    return gate;
 }
 
-/**
- * Close update modal
- */
-function closeUpdateModal() {
-    const modal = document.getElementById('modal-update-available');
-    if (modal) modal.classList.add('hidden');
-}
-window.closeUpdateModal = closeUpdateModal;
-
-/**
- * Show notification when no update is available
- */
-function showNoUpdateNotification(currentVersion) {
-    const notification = document.createElement('div');
-    notification.className = 'update-notification success';
-    notification.innerHTML = `
-        <span>✅ You're up to date! (v${currentVersion})</span>
-    `;
-    notification.style.cssText = `
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        background: #2d4a3e;
-        color: #51cf66;
-        padding: 12px 20px;
-        border-radius: 8px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-        z-index: 10000;
-        animation: slideIn 0.3s ease;
-    `;
-
-    document.body.appendChild(notification);
-
-    // Auto-remove after 3 seconds
-    setTimeout(() => {
-        notification.style.animation = 'slideOut 0.3s ease';
-        setTimeout(() => notification.remove(), 300);
-    }, 3000);
+function showUpdateGate() {
+    if (!availableUpdate) return;
+    const gate = getUpdateGate();
+    document.getElementById('update-gate-current').textContent = `v${availableUpdate.currentVersion}`;
+    document.getElementById('update-gate-new').textContent = `v${availableUpdate.newVersion}`;
+    document.getElementById('update-gate-changelog').textContent = availableUpdate.changelog || 'Bug fixes and improvements';
+    setGateError('');
+    const btn = document.getElementById('btn-gate-update');
+    btn.disabled = false;
+    btn.textContent = '⬇️ Update Now';
+    btn.dataset.action = 'update';
+    gate.classList.remove('hidden');
 }
 
-/**
- * Show the update banner (fallback UI)
- */
-function showUpdateBanner(newVersion, changelog) {
-    const banner = document.getElementById('update-banner');
-    const versionText = document.getElementById('update-version-text');
+function setGateProgress(percent, status) {
+    const box = document.getElementById('update-gate-progress');
+    if (!box) return;
+    box.classList.remove('hidden');
+    document.getElementById('update-gate-progress-fill').style.width = `${percent}%`;
+    document.getElementById('update-gate-status').textContent = status;
+}
 
-    if (banner) {
-        banner.classList.remove('hidden');
-        if (versionText) {
-            versionText.textContent = `v${newVersion}${changelog ? ' — ' + changelog : ''}`;
-        }
+function setGateError(message) {
+    const el = document.getElementById('update-gate-error');
+    const copyBtn = document.getElementById('btn-gate-copy-log');
+    if (!el) return;
+    el.textContent = message;
+    el.classList.toggle('hidden', !message);
+    if (copyBtn) copyBtn.classList.toggle('hidden', !message);
+}
+
+function onGatePrimaryClick() {
+    const btn = document.getElementById('btn-gate-update');
+    if (btn.dataset.action === 'reload') {
+        window.location.reload();
+        return;
     }
+    performAutoUpdate();
 }
 
-/**
- * Dismiss the update banner
- */
-function dismissUpdate() {
-    const banner = document.getElementById('update-banner');
+function copyLogForSupport() {
+    const lines = (typeof debugLogs !== 'undefined' ? debugLogs : []);
+    const text = (typeof Telemetry !== 'undefined' ? Telemetry.trimLog(lines, 3000) : lines).join('\n');
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); showNotification('Debug log copied — paste it to your admin', 'success'); }
+    catch (e) { showNotification('Could not copy the log', 'error'); }
+    ta.remove();
+}
+
+/* ============================================
+   NON-BLOCKING "CHECK FAILED" BANNER
+   ============================================ */
+
+function showCheckFailedBanner(reason) {
+    const banner = document.getElementById('update-check-failed');
+    if (!banner) return;
+    const text = document.getElementById('update-check-failed-text');
+    if (text) text.textContent = 'Couldn\'t check for updates (' + reason.slice(0, 120) + ')';
+    banner.classList.remove('hidden');
+}
+
+function hideCheckFailedBanner() {
+    const banner = document.getElementById('update-check-failed');
     if (banner) banner.classList.add('hidden');
 }
-window.dismissUpdate = dismissUpdate;
 
-/**
- * Perform the auto-update: download all extension files and overwrite
- */
-async function performAutoUpdate() {
-    // Get UI elements (support both banner and modal)
-    const bannerBtn = document.getElementById('btn-update-now');
-    const modalBtn = document.getElementById('btn-modal-update');
-    const bannerProgress = document.getElementById('update-progress');
-    const bannerProgressFill = document.getElementById('update-progress-fill');
-    const bannerStatusText = document.getElementById('update-status-text');
-    const modalProgress = document.getElementById('update-modal-progress');
-    const modalProgressFill = document.getElementById('update-modal-progress-fill');
-    const modalStatusText = document.getElementById('update-modal-status');
+/** Settings → Updates status line */
+function renderUpdateStatus() {
+    const el = document.getElementById('settings-update-status');
+    if (!el) return;
+    const when = UpdateState.lastCheckedAt ? new Date(UpdateState.lastCheckedAt).toLocaleTimeString() : 'never';
+    const msg = {
+        idle: 'Not checked yet',
+        checking: 'Checking…',
+        'up-to-date': `Up to date · last checked ${when}`,
+        available: `v${UpdateState.latestVersion} available · checked ${when}`,
+        failed: `Check failed (${UpdateState.error}) · ${when}`,
+        updating: `Installing v${UpdateState.latestVersion}…`,
+        installed: `v${UpdateState.latestVersion} installed — reload the panel`
+    }[UpdateState.status] || '';
+    el.textContent = msg;
+}
 
-    // Disable buttons
-    if (bannerBtn) {
-        bannerBtn.disabled = true;
-        bannerBtn.textContent = 'Updating...';
+/* ============================================
+   INSTALLING AN UPDATE
+   ============================================ */
+
+// fs.rmSync needs Node 14.14+; Premiere 2020 (CEP 10) ships Node 12.
+function removeDirRecursive(dir) {
+    const fs = require('fs');
+    const path = require('path');
+    if (!fs.existsSync(dir)) return;
+    for (const name of fs.readdirSync(dir)) {
+        const p = path.join(dir, name);
+        if (fs.lstatSync(p).isDirectory()) removeDirRecursive(p);
+        else fs.unlinkSync(p);
     }
-    if (modalBtn) {
-        modalBtn.disabled = true;
-        modalBtn.textContent = 'Updating...';
-    }
+    fs.rmdirSync(dir);
+}
 
-    // Show progress
-    if (bannerProgress) bannerProgress.classList.remove('hidden');
-    if (modalProgress) modalProgress.classList.remove('hidden');
+function sha256Hex(buffer) {
+    return require('crypto').createHash('sha256').update(buffer).digest('hex');
+}
 
-    function updateProgress(percent, status) {
-        if (bannerProgressFill) bannerProgressFill.style.width = `${percent}%`;
-        if (modalProgressFill) modalProgressFill.style.width = `${percent}%`;
-        if (bannerStatusText) bannerStatusText.textContent = status;
-        if (modalStatusText) modalStatusText.textContent = status;
-    }
-
+function readInstalledManifest(extensionRoot) {
     try {
         const fs = require('fs');
-        const path = require('path');
-        const https = require('https');
-
-        // Extension root directory (where files need to be overwritten)
-        const extensionRoot = getExtensionRoot();
-        console.log(`📁 Extension root: ${extensionRoot}`);
-
-        // Step 1: Get the file list
-        updateProgress(5, 'Fetching file list...');
-
-        const urls = getUpdateUrls();
-        // Prefer the downloadUrl published in the remote version.json (single source
-        // of truth) over the hardcoded rawBaseUrl, so the repo location is configurable.
-        const rawBase = (availableUpdate && availableUpdate.downloadUrl) || urls.rawBaseUrl;
-        const fileList = await getFileList(urls);
-        console.log(`📋 Found ${fileList.length} files to update`);
-
-        // Step 2: Download and overwrite each file
-        let completed = 0;
-        const total = fileList.length;
-
-        for (const file of fileList) {
-            const relativePath = file.path.replace('dist/premiere-extension/', '').replace(/^\//, '');
-            const targetPath = path.join(extensionRoot, relativePath);
-
-            updateProgress(5 + (completed / total) * 85, `Updating ${relativePath}...`);
-
-            try {
-                // Ensure directory exists
-                const dir = path.dirname(targetPath);
-                if (!fs.existsSync(dir)) {
-                    fs.mkdirSync(dir, { recursive: true });
-                }
-
-                // Download file
-                const downloadUrl = file.download_url || `${rawBase}/${relativePath}`;
-                const fileContent = await downloadFileBuffer(downloadUrl);
-                fs.writeFileSync(targetPath, fileContent);
-
-                completed++;
-                console.log(`  ✅ Updated: ${relativePath}`);
-            } catch (fileErr) {
-                console.error(`  ❌ Failed: ${relativePath}`, fileErr.message);
-            }
-        }
-
-        // Step 3: Update local version.json to prevent repeated update prompts
-        try {
-            const versionFile = path.join(extensionRoot, 'version.json');
-            const newVersionData = {
-                version: availableUpdate ? availableUpdate.newVersion : '0.0.0',
-                releaseDate: availableUpdate ? availableUpdate.releaseDate : new Date().toISOString().split('T')[0],
-                changelog: availableUpdate ? availableUpdate.changelog : 'Updated'
-            };
-            fs.writeFileSync(versionFile, JSON.stringify(newVersionData, null, 4));
-            console.log(`✅ Updated local version.json to v${newVersionData.version}`);
-        } catch (versionErr) {
-            console.warn('Could not update version.json:', versionErr.message);
-        }
-
-        // Step 4: Done!
-        updateProgress(100, `✅ Updated ${completed}/${total} files. Restart Premiere to apply!`);
-
-        if (bannerBtn) {
-            bannerBtn.textContent = '✅ Updated!';
-            bannerBtn.disabled = true;
-        }
-        if (modalBtn) {
-            modalBtn.textContent = '✅ Updated!';
-            modalBtn.disabled = true;
-        }
-
-        // Clear the available update flag
-        availableUpdate = null;
-
-        // Show restart prompt
-        setTimeout(() => {
-            const shouldRestart = confirm(
-                'Update complete!\n\n' +
-                `Updated ${completed} of ${total} files.\n\n` +
-                'Restart Premiere Pro to apply changes?'
-            );
-            if (shouldRestart) {
-                alert('Please close and reopen Premiere Pro to use the updated extension.');
-            }
-            closeUpdateModal();
-        }, 1000);
-
+        const p = require('path').join(extensionRoot, UpdateCore.MANIFEST_NAME);
+        if (!fs.existsSync(p)) return [];
+        return UpdateCore.parseManifest(JSON.parse(fs.readFileSync(p, 'utf8')));
     } catch (e) {
-        console.error('Auto-update failed:', e);
-        updateProgress(0, `❌ Update failed: ${e.message}`);
+        return [];
+    }
+}
 
-        if (bannerBtn) {
-            bannerBtn.disabled = false;
-            bannerBtn.textContent = 'Retry Update';
+/**
+ * Resolve what to download. Prefers the release's files.json (with hashes);
+ * falls back to the legacy listing (GitHub Contents API / local test server)
+ * for releases published before files.json existed.
+ */
+async function resolveUpdateFiles(rawBase, expectedVersion) {
+    let text = null;
+    try {
+        text = await fetchRemoteText(`${rawBase}/${UpdateCore.MANIFEST_NAME}?t=${Date.now()}`);
+    } catch (e) {
+        console.warn('[Update] files.json unavailable, using legacy file list:', e.message);
+    }
+    if (text !== null) {
+        const manifestObj = JSON.parse(text);
+        // GitHub's CDN can briefly serve the previous release's manifest; installing
+        // it under the new version number would strand the editor on old code.
+        if (manifestObj.version && manifestObj.version !== expectedVersion) {
+            throw new Error(`The v${expectedVersion} release is still being published (server has v${manifestObj.version} files). Try again in a few minutes.`);
         }
-        if (modalBtn) {
-            modalBtn.disabled = false;
-            modalBtn.textContent = 'Retry Update';
+        return { entries: UpdateCore.parseManifest(manifestObj), manifestText: text, verified: true };
+    }
+    const legacy = await getFileList(getUpdateUrls());
+    const entries = legacy
+        .map(f => ({
+            path: f.path.replace('dist/premiere-extension/', '').replace(/^\//, ''),
+            size: typeof f.size === 'number' ? f.size : null,
+            download_url: f.download_url
+        }))
+        .filter(f => UpdateCore.isSafeRelPath(f.path) && f.path !== 'version.json' && f.path !== 'files.json');
+    if (entries.length === 0) throw new Error('Update file list is empty');
+    return { entries, manifestText: null, verified: false };
+}
+
+async function performAutoUpdate() {
+    if (!availableUpdate || UpdateState.status === 'updating') return;
+    const btn = document.getElementById('btn-gate-update');
+    if (btn) { btn.disabled = true; btn.textContent = 'Updating...'; }
+    setGateError('');
+    UpdateState.status = 'updating';
+    renderUpdateStatus();
+
+    const fs = require('fs');
+    const path = require('path');
+    const target = availableUpdate;
+    const attemptAt = new Date().toISOString();
+
+    try {
+        const extensionRoot = getExtensionRoot();
+        const stagingRoot = path.join(extensionRoot, '.update-staging');
+        const rawBase = target.downloadUrl || getUpdateUrls().rawBaseUrl;
+        console.log(`[Update] Installing v${target.newVersion} into ${extensionRoot}`);
+
+        setGateProgress(3, 'Fetching file list...');
+        const { entries, manifestText, verified } = await resolveUpdateFiles(rawBase, target.newVersion);
+        const oldEntries = readInstalledManifest(extensionRoot);
+
+        // Skip files that are already byte-identical (makes retries fast).
+        const toFetch = entries.filter(entry => {
+            if (!verified) return true;
+            try {
+                const local = path.join(extensionRoot, entry.path);
+                if (!fs.existsSync(local)) return true;
+                const buf = fs.readFileSync(local);
+                return UpdateCore.verifyEntry(entry, buf.length, sha256Hex(buf)) !== null;
+            } catch (e) { return true; }
+        });
+
+        // Phase 1: download + verify everything into staging. Nothing live is touched yet.
+        removeDirRecursive(stagingRoot);
+        const failures = [];
+        for (let i = 0; i < toFetch.length; i++) {
+            const entry = toFetch[i];
+            setGateProgress(5 + (i / Math.max(1, toFetch.length)) * 75, `Downloading ${entry.path}...`);
+            try {
+                const url = entry.download_url || `${rawBase}/${entry.path.split('/').map(encodeURIComponent).join('/')}`;
+                const buf = await downloadWithRetry(url);
+                if (verified) {
+                    const problem = UpdateCore.verifyEntry(entry, buf.length, sha256Hex(buf));
+                    if (problem) throw new Error(problem);
+                } else if (entry.size !== null && buf.length !== entry.size) {
+                    throw new Error(`size mismatch (got ${buf.length}, expected ${entry.size})`);
+                }
+                const staged = path.join(stagingRoot, entry.path);
+                fs.mkdirSync(path.dirname(staged), { recursive: true });
+                fs.writeFileSync(staged, buf);
+            } catch (e) {
+                failures.push(`${entry.path}: ${e.message}`);
+            }
+        }
+        if (failures.length > 0) {
+            removeDirRecursive(stagingRoot);
+            throw new Error(`${failures.length} file(s) failed to download — nothing was changed.\n` + failures.slice(0, 5).join('\n'));
+        }
+
+        // Phase 2: move staged files into place.
+        setGateProgress(85, 'Installing...');
+        for (const entry of toFetch) {
+            const dest = path.join(extensionRoot, entry.path);
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.copyFileSync(path.join(stagingRoot, entry.path), dest);
+        }
+        removeDirRecursive(stagingRoot);
+
+        // Remove files we shipped before but the new release no longer has.
+        for (const rel of UpdateCore.removedPaths(oldEntries, entries)) {
+            try { fs.unlinkSync(path.join(extensionRoot, rel)); console.log(`[Update] Removed ${rel}`); } catch (e) { }
+        }
+
+        // Phase 3: mark complete. version.json LAST.
+        if (manifestText) fs.writeFileSync(path.join(extensionRoot, UpdateCore.MANIFEST_NAME), manifestText);
+        fs.writeFileSync(path.join(extensionRoot, 'version.json'), JSON.stringify(target.versionData, null, 4));
+
+        const hostChanged = UpdateCore.hostFilesChanged(toFetch);
+        if (hostChanged) reloadHostScript(extensionRoot);
+
+        console.log(`✅ Updated to v${target.newVersion} (${toFetch.length} changed file(s))`);
+        UpdateState.status = 'installed';
+        renderUpdateStatus();
+        noteTelemetry({ lastAttemptAt: attemptAt, lastAttemptResult: `installed v${target.newVersion} (${toFetch.length} files)` });
+
+        setGateProgress(100, hostChanged
+            ? `✅ v${target.newVersion} installed. Reload the panel now; if something looks off, restart Premiere.`
+            : `✅ v${target.newVersion} installed. Reload the panel to finish.`);
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = '🔄 Reload panel';
+            btn.dataset.action = 'reload';
+        }
+    } catch (e) {
+        console.error('Auto-update failed:', e.message);
+        UpdateState.status = 'available';
+        renderUpdateStatus();
+        noteTelemetry({ lastAttemptAt: attemptAt, lastAttemptResult: 'failed: ' + e.message.split('\n')[0] });
+        setGateProgress(0, 'Update failed');
+        setGateError(e.message);
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = '🔁 Retry Update';
+            btn.dataset.action = 'update';
         }
     }
 }
 window.performAutoUpdate = performAutoUpdate;
 
+/** Re-evaluate host/index.jsx so new ExtendScript functions load without restarting Premiere. */
+function reloadHostScript(extensionRoot) {
+    try {
+        const jsx = require('path').join(extensionRoot, 'host', 'index.jsx').replace(/\\/g, '/');
+        new CSInterface().evalScript(`$.evalFile(${JsxEscape.jsxString(jsx)})`);
+    } catch (e) {
+        console.warn('[Update] Could not reload host script:', e.message);
+    }
+}
+
+async function downloadWithRetry(url, attempts = 3) {
+    let lastErr;
+    for (let i = 1; i <= attempts; i++) {
+        try {
+            return await downloadFileBuffer(url + (url.includes('?') ? '&' : '?') + 't=' + Date.now());
+        } catch (e) {
+            lastErr = e;
+            if (i < attempts) await new Promise(r => setTimeout(r, i * 1000));
+        }
+    }
+    throw lastErr;
+}
+
 /**
- * Get file list from update source (GitHub API or local test server)
+ * Legacy file list from update source (GitHub API or local test server)
  */
 async function getFileList(urls) {
     if (UPDATE_CONFIG.mode === 'local') {
-        // Local mode: expects a JSON array directly
-        const response = await fetch(urls.repoBaseUrl + '?t=' + Date.now());
-        if (!response.ok) throw new Error(`File list error: ${response.status}`);
-        return await response.json();
-    } else {
-        // GitHub mode: recursive API calls
-        return await getGitHubFileList(urls.repoBaseUrl);
+        return JSON.parse(await fetchRemoteText(urls.repoBaseUrl + '?t=' + Date.now()));
     }
+    return await getGitHubFileList(urls.repoBaseUrl);
 }
 
 /**
@@ -734,13 +743,8 @@ async function getGitHubFileList(apiUrl, allFiles = []) {
 
     for (const item of items) {
         if (item.type === 'file') {
-            allFiles.push({
-                path: item.path,
-                download_url: item.download_url,
-                sha: item.sha
-            });
+            allFiles.push({ path: item.path, download_url: item.download_url, size: item.size });
         } else if (item.type === 'dir') {
-            // Recurse into subdirectories
             await getGitHubFileList(item.url, allFiles);
         }
     }
@@ -755,8 +759,7 @@ function downloadFileBuffer(url) {
     return new Promise((resolve, reject) => {
         const protocol = url.startsWith('https') ? require('https') : require('http');
 
-        protocol.get(url, { headers: { 'User-Agent': 'TeamSync-Extension' } }, (response) => {
-            // Handle redirects
+        const req = protocol.get(url, { headers: { 'User-Agent': 'TeamSync-Extension' }, timeout: 30000 }, (response) => {
             if (response.statusCode === 301 || response.statusCode === 302) {
                 downloadFileBuffer(response.headers.location).then(resolve).catch(reject);
                 return;
@@ -771,7 +774,9 @@ function downloadFileBuffer(url) {
             response.on('data', chunk => chunks.push(chunk));
             response.on('end', () => resolve(Buffer.concat(chunks)));
             response.on('error', reject);
-        }).on('error', reject);
+        });
+        req.on('error', reject);
+        req.on('timeout', () => { req.destroy(); reject(new Error('timeout (30s)')); });
     });
 }
 
@@ -779,27 +784,21 @@ function downloadFileBuffer(url) {
  * Initialize update checker
  */
 function initUpdateChecker() {
-    // Load saved mode preference
     loadUpdateMode();
-
     console.log(`🔧 Update checker initialized (mode: ${UPDATE_CONFIG.mode})`);
+    if (!UPDATE_CONFIG.enabled) return;
 
-    // Run update check after startup delay
-    if (UPDATE_CONFIG.enabled && UPDATE_CONFIG.startupDelay > 0) {
-        setTimeout(() => {
-            checkForUpdates(false).catch(err => console.warn('Update check error:', err));
-        }, UPDATE_CONFIG.startupDelay);
-    }
+    setTimeout(() => checkForUpdates(false), UPDATE_CONFIG.startupDelay);
+    setInterval(() => checkForUpdates(false), UPDATE_CONFIG.checkInterval);
 
-    // Setup periodic checks if configured
-    if (UPDATE_CONFIG.checkInterval > 0) {
-        setInterval(() => {
-            checkForUpdates(false).catch(err => console.warn('Periodic update check error:', err));
-        }, UPDATE_CONFIG.checkInterval);
-    }
+    // Premiere is often left open all day: re-check when the editor comes back to the panel.
+    window.addEventListener('focus', () => {
+        const last = UpdateState.lastCheckedAt ? Date.parse(UpdateState.lastCheckedAt) : 0;
+        if (Date.now() - last >= UPDATE_CONFIG.focusCheckMinGap) checkForUpdates(false);
+    });
 }
 
-// Add CSS for animations
+// Add CSS for animations + the update gate
 const updateStyles = document.createElement('style');
 updateStyles.textContent = `
     @keyframes slideIn {
@@ -811,103 +810,66 @@ updateStyles.textContent = `
         to { transform: translateX(100%); opacity: 0; }
     }
 
-    .update-modal-content {
-        max-width: 400px;
+    .update-gate {
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 20000;
+        background: rgba(15, 15, 15, 0.96);
+        display: flex; align-items: center; justify-content: center;
+        padding: 16px; overflow-y: auto;
     }
-
-    .update-modal-body {
-        padding: 20px 0;
+    .update-gate.hidden { display: none; }
+    .update-gate-card {
+        width: 100%; max-width: 420px; text-align: center;
+        background: var(--bg-primary, #232323);
+        border: 1px solid #3a3a3a; border-radius: 10px; padding: 24px 20px;
     }
-
-    .update-version-info {
-        text-align: center;
-        margin-bottom: 20px;
+    .update-gate-icon { font-size: 32px; margin-bottom: 6px; }
+    .update-gate-card h2 { margin: 0 0 6px; font-size: 18px; }
+    .update-gate-sub { margin: 0 0 16px; color: #aaa; font-size: 12px; line-height: 1.5; }
+    .update-gate-error {
+        white-space: pre-wrap; text-align: left; font-size: 11px; color: #ff6b6b;
+        background: #3a2626; border-radius: 6px; padding: 8px 10px; margin: 12px 0 0;
+        max-height: 120px; overflow-y: auto;
     }
+    .update-gate-actions { display: flex; gap: 8px; justify-content: center; margin-top: 16px; }
 
     .version-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 10px;
+        display: inline-flex; align-items: center; gap: 10px;
         background: var(--bg-secondary, #2d2d2d);
-        padding: 10px 20px;
-        border-radius: 20px;
-        font-size: 16px;
+        padding: 8px 18px; border-radius: 20px; font-size: 15px; margin-bottom: 14px;
     }
-
-    .version-current {
-        color: #888;
-    }
-
-    .version-arrow {
-        color: var(--accent, #0078d4);
-    }
-
-    .version-new {
-        color: var(--accent, #0078d4);
-        font-weight: bold;
-    }
-
-    .release-date {
-        margin-top: 8px;
-        color: #888;
-        font-size: 12px;
-    }
+    .version-current { color: #888; }
+    .version-arrow { color: var(--accent, #0078d4); }
+    .version-new { color: var(--accent, #0078d4); font-weight: bold; }
 
     .changelog-section {
         background: var(--bg-secondary, #2d2d2d);
-        padding: 15px;
-        border-radius: 8px;
-        margin-bottom: 15px;
+        padding: 12px 14px; border-radius: 8px; text-align: left;
     }
+    .changelog-section h4 { margin: 0 0 6px 0; font-size: 12px; color: #aaa; }
+    .changelog-text { margin: 0; color: #fff; line-height: 1.5; font-size: 12px; }
 
-    .changelog-section h4 {
-        margin: 0 0 8px 0;
-        font-size: 13px;
-        color: #aaa;
-    }
+    .update-progress-section { margin-top: 14px; font-size: 11px; color: #aaa; }
+    .update-progress-section.hidden { display: none; }
+    .update-progress-section .progress-bar-container { margin-bottom: 6px; }
 
-    .changelog-text {
-        margin: 0;
-        color: #fff;
-        line-height: 1.5;
+    .update-check-failed {
+        display: flex; align-items: center; justify-content: space-between; gap: 8px;
+        background: #4a3f22; color: #ffd166; font-size: 11px;
+        padding: 6px 10px; border-radius: 6px; margin: 6px 0;
     }
-
-    .update-progress-section {
-        margin-top: 15px;
-    }
-
-    .update-modal-actions {
-        display: flex;
-        gap: 10px;
-        justify-content: flex-end;
-    }
+    .update-check-failed.hidden { display: none; }
 `;
 document.head.appendChild(updateStyles);
-
-/**
- * Toggle between local and remote update mode (for dev UI checkbox)
- */
-function toggleUpdateMode(checkbox) {
-    const mode = checkbox.checked ? 'local' : 'remote';
-    setUpdateMode(mode);
-}
-window.toggleUpdateMode = toggleUpdateMode;
 
 /**
  * Update the settings modal with current version info
  */
 function updateSettingsVersion() {
     const versionEl = document.getElementById('settings-version');
-    const modeToggle = document.getElementById('toggle-update-mode');
-
     if (versionEl) {
-        const localData = getLocalVersion();
-        versionEl.textContent = `v${localData.version || '0.0.0'}`;
+        versionEl.textContent = `v${getLocalVersion().version || '0.0.0'}`;
     }
-
-    if (modeToggle) {
-        modeToggle.checked = UPDATE_CONFIG.mode === 'local';
-    }
+    renderUpdateStatus();
 }
 
 // Initialize on load
@@ -920,10 +882,8 @@ document.addEventListener('DOMContentLoaded', () => {
         settingsBtn.addEventListener('click', updateSettingsVersion);
     }
 
-    // Auto-populate version badges from version.json
     try {
-        const localData = getLocalVersion();
-        const ver = 'v' + (localData.version || '0.0.0');
+        const ver = 'v' + (getLocalVersion().version || '0.0.0');
         const headerBadge = document.getElementById('header-version-badge');
         const footerText = document.getElementById('footer-version-text');
         if (headerBadge) headerBadge.textContent = ver;

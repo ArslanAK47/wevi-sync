@@ -70,31 +70,16 @@
                     <span class="editor-name" id="display-editor-name">Editor</span>
                 </div>
             </div>
-            <button id="btn-settings" class="btn-icon" title="Settings">⚙️</button>
+            <div class="header-buttons">
+                <button id="btn-admin" class="btn-icon hidden" title="Admin: editor versions &amp; logs" onclick="openAdminView()">🛡️</button>
+                <button id="btn-settings" class="btn-icon" title="Settings">⚙️</button>
+            </div>
         </header>
 
-        <!-- Update Available Banner -->
-        <div id="update-banner" class="update-banner hidden">
-            <div class="update-banner-content">
-                <div class="update-info">
-                    <span class="update-icon">🔔</span>
-                    <div>
-                        <strong>Update Available!</strong>
-                        <span id="update-version-text" class="update-version">v0.0.0</span>
-                    </div>
-                </div>
-                <div class="update-actions">
-                    <button id="btn-update-now" class="btn btn-accent btn-small" onclick="performAutoUpdate()">Update
-                        Now</button>
-                    <button class="btn-icon btn-small" onclick="dismissUpdate()" title="Dismiss">✕</button>
-                </div>
-            </div>
-            <div id="update-progress" class="update-progress hidden">
-                <div class="progress-bar-container">
-                    <div id="update-progress-fill" class="progress-bar-fill" style="width: 0%"></div>
-                </div>
-                <span id="update-status-text">Downloading update...</span>
-            </div>
+        <!-- Update check failed (non-blocking). The mandatory update screen is built by update-checker.js -->
+        <div id="update-check-failed" class="update-check-failed hidden">
+            <span id="update-check-failed-text">Couldn't check for updates</span>
+            <button class="btn btn-secondary btn-small" onclick="checkForUpdates(true)">Retry</button>
         </div>
 
         <!-- Sync Status -->
@@ -184,7 +169,7 @@
 
         <!-- Build Footer -->
         <div class="build-footer" id="build-footer">
-            Team Sync <span id="footer-version-text">v1.5.3</span> &middot; Auto-update ready
+            Team Sync <span id="footer-version-text">v1.5.3</span> 
         </div>
     </div>
 
@@ -213,9 +198,35 @@
                     <span>Version: <strong id="settings-version">v1.0.0</strong></span>
                     <button id="btn-check-updates" class="btn btn-secondary btn-small" onclick="checkForUpdates(true)">Check for Updates</button>
                 </div>
+                <p id="settings-update-status" class="settings-update-status">Not checked yet</p>
             </div>
             <div class="modal-actions">
                 <button id="btn-deactivate" class="btn btn-danger">Sign Out</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Admin Modal (only reachable when signed in as an admin email) -->
+    <div id="modal-admin" class="modal hidden">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3>🛡️ Editors</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="admin-toolbar">
+                <span id="admin-status" class="admin-status">Loading…</span>
+                <button class="btn btn-secondary btn-small" onclick="refreshAdminView()">↻ Refresh</button>
+            </div>
+            <div id="admin-editor-list" class="admin-editor-list"></div>
+            <div id="admin-log-section" class="admin-log-section hidden">
+                <div class="admin-toolbar">
+                    <strong id="admin-log-title">Log</strong>
+                    <div>
+                        <button class="btn btn-secondary btn-small" onclick="copyAdminLog()">📋 Copy</button>
+                        <button class="btn btn-secondary btn-small" onclick="saveAdminLog()">💾 Save to file</button>
+                    </div>
+                </div>
+                <textarea id="admin-log-output" class="admin-log-output" readonly></textarea>
             </div>
         </div>
     </div>
@@ -443,6 +454,7 @@
     <script src="js/config.js"></script>
     <script src="js/google-config.js"></script>
     <script src="js/drive-errors.js"></script>
+    <script src="js/jsx-escape.js"></script>
     <script src="js/project-id.js"></script>
     <script src="js/drive-paths.js"></script>
     <script src="js/google-drive.js"></script>
@@ -450,6 +462,8 @@
     <script src="js/upload-helper.js"></script>
     <script src="js/download-helper.js"></script>
     <script src="js/upload-xhr.js"></script>
+    <script src="js/update-core.js"></script>
+    <script src="js/telemetry.js"></script>
     <script src="js/update-checker.js"></script>
     <script src="js/main.js"></script>
 </body>

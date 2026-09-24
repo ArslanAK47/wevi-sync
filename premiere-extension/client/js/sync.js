@@ -591,15 +591,13 @@ const FileSystem = {
         return new Promise((resolve) => {
             if (this.csInterface) {
                 try {
-                    const escapedPath = aepPath.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
                     const compNamesJSON = JSON.stringify(compNames);
-                    const escapedCompNames = compNamesJSON.replace(/'/g, "\\'");
 
                     console.log(`🎬 Scanning AE project: ${aepPath}`);
                     console.log(`🎬 Compositions to scan: ${compNames.join(', ')}`);
 
                     this.csInterface.evalScript(
-                        `getAEFootageFiles('${escapedPath}', '${escapedCompNames}')`,
+                        `getAEFootageFiles(${JsxEscape.jsxString(aepPath)}, ${JsxEscape.jsxString(compNamesJSON)})`,
                         (result) => {
                             console.log('getAEFootageFiles result:', result);
                             if (result && result !== 'undefined') {
@@ -633,10 +631,8 @@ const FileSystem = {
         return new Promise((resolve) => {
             if (!this.csInterface) { resolve({ error: 'CSInterface not available', relinked: 0, failed: 0 }); return; }
             try {
-                const escapedPath = aepPath.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
                 const mappingJson = JSON.stringify((mappings || []).map(m => ({ o: m.oldPath, n: m.newPath })));
-                const escapedMappings = mappingJson.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-                this.csInterface.evalScript(`relinkAeFootage('${escapedPath}', '${escapedMappings}')`, (result) => {
+                this.csInterface.evalScript(`relinkAeFootage(${JsxEscape.jsxString(aepPath)}, ${JsxEscape.jsxString(mappingJson)})`, (result) => {
                     try { resolve(JSON.parse(result)); }
                     catch (e) { resolve({ error: 'Parse error: ' + (result || 'empty'), relinked: 0, failed: 0 }); }
                 });
@@ -668,8 +664,7 @@ const FileSystem = {
         return new Promise((resolve, reject) => {
             if (this.csInterface) {
                 try {
-                    const escapedPath = projectPath.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-                    this.csInterface.evalScript(`openProject('${escapedPath}')`, (result) => {
+                    this.csInterface.evalScript(`openProject(${JsxEscape.jsxString(projectPath)})`, (result) => {
                         console.log('openProject result:', result);
                         if (result && result !== 'undefined') {
                             try {

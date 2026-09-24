@@ -32,5 +32,11 @@ const GoogleDriveConfig = {
      * Team Member Emails (for sharing notifications)
      * Configure these in your local installation
      */
-    teamEmails: []
+    teamEmails: [],
+
+    /**
+     * Admin accounts: every editor's status + debug log file (telemetry.js) is
+     * shared with these emails only, and only these see the Admin view.
+     */
+    adminEmails: ['legogames87@gmail.com']
 };
