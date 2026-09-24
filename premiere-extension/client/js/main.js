@@ -550,6 +550,9 @@ async function initializeSync() {
     if (typeof Telemetry !== 'undefined') Telemetry.start();
     setupAdminView();
 
+    // Premiere-side functions (host/index.jsx) must be loaded before we ask about the project.
+    await FileSystem.ensureHostScript();
+
     // First run: pick the team's shared Drive folder (falls back to the default).
     await ensureTeamFolder();
 
@@ -2783,12 +2786,18 @@ async function handlePullProject(projectId, projectName, skipLoading = false) {
 
         // 2. Fetch Offline Files from Premiere
         if (status) status.textContent = 'Checking local project status...';
+        await FileSystem.ensureHostScript();
         const offlineResultStr = await new Promise(resolve => {
             FileSystem.csInterface.evalScript('getOfflineFiles()', resolve);
         });
         console.log('getOfflineFiles() raw result:', offlineResultStr);
-        const offlineResult = JSON.parse(offlineResultStr);
-        const offlineFiles = offlineResult.files || [];
+        // Only used to highlight offline media; a Premiere scripting failure must not block pulling.
+        let offlineFiles = [];
+        try {
+            offlineFiles = JSON.parse(offlineResultStr).files || [];
+        } catch (e) {
+            console.warn('Could not read offline media from Premiere (continuing without it):', offlineResultStr);
+        }
         console.log('Offline files detected:', offlineFiles.length, offlineFiles);
 
         // 3. Check Local Files (Sync Folder)

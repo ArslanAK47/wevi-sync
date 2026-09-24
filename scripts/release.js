@@ -164,7 +164,7 @@ function checkGitReady() {
     const dirty = git(['status', '--porcelain']).split('\n').filter(Boolean);
     const outside = dirty.filter(l => {
         const p = l.slice(3).replace(/^"|"$/g, '');
-        return !(p.startsWith('premiere-extension/') || p.startsWith('dist/') || p === 'version.json' || p.startsWith('scripts/') || p === 'release.bat' || p === 'build-dist.bat');
+        return !(p.startsWith('premiere-extension/') || p.startsWith('dist/') || p === 'version.json' || p.startsWith('scripts/') || p === 'release.bat' || p === 'build-dist.bat' || p === 'README.md' || p === '.gitattributes');
     });
     if (outside.length) {
         log('  ! These changes are NOT part of the release and will be left alone:');
@@ -255,7 +255,7 @@ async function main() {
     buildDist(versionData);
 
     log('▶ Committing...');
-    git(['add', '--all', '--', 'premiere-extension', 'dist', 'version.json', 'scripts', 'release.bat', 'build-dist.bat']);
+    git(['add', '--all', '--', 'premiere-extension', 'dist', 'version.json', 'scripts', 'release.bat', 'build-dist.bat', 'README.md', '.gitattributes']);
     git(['commit', '-m', `v${version}: ${args.changelog}`]);
     git(['tag', '-a', `v${version}`, '-m', `v${version}: ${args.changelog}`]);
     log(`  ✓ committed + tagged v${version}`);

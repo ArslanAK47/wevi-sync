@@ -164,6 +164,44 @@ const FileSystem = {
         return this.isCEP;
     },
 
+    /**
+     * Make sure host/index.jsx is loaded in Premiere's ExtendScript engine.
+     * Premiere normally evaluates it from the manifest's ScriptPath, but when it
+     * doesn't (seen on Premiere 26: every call returns "EvalScript error.") we
+     * load it ourselves and log the exact reason for the admin view.
+     * @returns {Promise<{ok:boolean, reloaded?:boolean, reason?:string, detail?:string}>}
+     */
+    ensureHostScript() {
+        if (this._hostCheck) return this._hostCheck;
+        const ev = (script) => new Promise((resolve) => {
+            try { this.csInterface.evalScript(script, (r) => resolve(String(r))); }
+            catch (e) { resolve('JS error: ' + e.message); }
+        });
+        this._hostCheck = (async () => {
+            if (!this.csInterface || typeof __adobe_cep__ === 'undefined') return { ok: false, reason: 'not running inside Premiere' };
+
+            const ping = await ev('1+1');
+            if (ping !== '2') {
+                console.error(`[Host] Premiere's script engine is not responding (1+1 returned "${ping}"). Restart Premiere.`);
+                return { ok: false, reason: 'engine', detail: ping };
+            }
+            if (await ev('typeof getActiveProject') === 'function') return { ok: true };
+
+            const jsx = require('path').join(getExtensionRoot(), 'host', 'index.jsx').replace(/\\/g, '/');
+            console.warn('[Host] host/index.jsx was not loaded by Premiere, loading it now:', jsx);
+            const loaded = await ev(
+                `(function(){ try { $.evalFile(${JsxEscape.jsxString(jsx)}); return 'ok'; }` +
+                ` catch (e) { return 'ERR: ' + e.message + ' (line ' + e.line + ')'; } })()`);
+            if (await ev('typeof getActiveProject') === 'function') {
+                console.log('[Host] host script loaded by the panel');
+                return { ok: true, reloaded: true };
+            }
+            console.error(`[Host] Could not load host/index.jsx: ${loaded}`);
+            return { ok: false, reason: 'load', detail: loaded };
+        })();
+        return this._hostCheck;
+    },
+
     // Get current project from Premiere Pro
     getCurrentProjectInfo() {
         return new Promise((resolve) => {

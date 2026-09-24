@@ -159,12 +159,29 @@ Open Chrome DevTools for debugging:
 
 ## 📦 Releasing / Versioning
 
-`premiere-extension/version.json` is the **single source of truth** for the app version.
-Bump it there, then run `build-dist.bat` — it mirrors that file to
-`dist/premiere-extension/version.json` (used by the auto-updater's file download) and to the
-repo-root `version.json` (used as the remote version check). Keep all three identical; the test
-harness (`node premiere-extension/test/run.js`) fails if they drift. The `downloadUrl` field in
-`version.json` controls where the updater pulls files from.
+Publish an update to every editor with one command (from the repo root, on `main`):
+
+```
+release.bat patch "Fixed pull asking for a sync folder"     # 1.6.3 -> 1.6.4
+release.bat minor "Admin view for editor versions + logs"   # 1.6.3 -> 1.7.0
+release.bat patch "..." --dry-run                           # tests + build only, no commit
+```
+
+`scripts/release.js` runs the tests, bumps `premiere-extension/version.json`, builds
+`dist/premiere-extension/` plus `files.json` (sha256 of every shipped file), mirrors `version.json`
+to the repo root, rebuilds the installer zip, commits, tags `vX.Y.Z`, pushes, and waits until
+GitHub serves the new version. Don't hand-edit the version files or `dist/`.
+
+Every open panel checks on startup, every 30 min and when the editor clicks back into it. A newer
+version shows a **mandatory** update screen (it waits for a running push/pull to finish first).
+Files are downloaded to a staging folder and verified against `files.json`; nothing is replaced
+unless every file checks out, and `version.json` is written last, so a failed update is retried
+instead of being half-applied. `build-dist.bat` only rebuilds `dist/` at the current version.
+
+**Admin view:** each panel writes `TeamSync-Telemetry-<email>.json` to the editor's own Drive,
+shared only with `GoogleDriveConfig.adminEmails` (`client/js/google-config.js`). Signed in as an
+admin, the 🛡️ button in the header lists every editor's version, Premiere version, last seen, last
+error and debug log. OAuth tokens and secrets are redacted before upload.
 
 > Note: `CSXS/manifest.xml`'s `ExtensionBundleVersion` is the CEP bundle version and is unrelated
 > to the app version in `version.json`.

@@ -7,3 +7,6 @@
 *.zip binary
 *.node binary
 *.map binary
+
+# Windows batch files need CRLF (label lookups break with LF)
+*.bat text eol=crlf

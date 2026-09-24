@@ -1,6 +1,6 @@
 {
-    "version": "1.8.0",
+    "version": "1.9.0",
     "releaseDate": "2026-09-24",
-    "changelog": "added bug fix",
+    "changelog": "bug fixed",
     "downloadUrl": "https://raw.githubusercontent.com/ArslanAK47/wevi-sync/main/dist/premiere-extension"
 }

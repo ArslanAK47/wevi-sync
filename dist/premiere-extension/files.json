@@ -1,6 +1,6 @@
 {
-    "version": "1.8.0",
-    "generatedAt": "2026-09-24T07:31:56.137Z",
+    "version": "1.9.0",
+    "generatedAt": "2026-09-24T08:13:45.272Z",
     "files": [
         {
             "path": "CSXS/manifest.xml",
@@ -59,8 +59,8 @@
         },
         {
             "path": "client/js/main.js",
-            "size": 118965,
-            "sha256": "7ef762896a69eade3a34f93459fb097b82064f46ade93dedd21ba08655fade29"
+            "size": 119395,
+            "sha256": "1b4eca956b131745eba806a0a0de337c276f04382bd99ed6e31e6cfeb9644bc8"
         },
         {
             "path": "client/js/project-id.js",
@@ -69,8 +69,8 @@
         },
         {
             "path": "client/js/sync.js",
-            "size": 26337,
-            "sha256": "03947309813747f85a3310d683e567289e4f19b8034365fb547f2fd14e39aee8"
+            "size": 28440,
+            "sha256": "2a37fa62521439bc8b294da7e0c6c71948018aded3beede07729dca11be26cff"
         },
         {
             "path": "client/js/telemetry.js",
