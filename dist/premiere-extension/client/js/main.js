@@ -615,6 +615,7 @@ async function refreshAdminView() {
                             · seen ${seen ? escapeHtml(formatAdminTime(seen)) : 'never'}
                         </span>
                         ${ed.lastError ? `<span class="admin-editor-error">⚠️ ${escapeHtml(ed.lastError.slice(0, 140))}</span>` : ''}
+                        ${ed.installWritable === false ? '<span class="admin-editor-error">Read-only install: cannot auto-update. Run install.bat.</span>' : ''}
                         ${ed._readError ? `<span class="admin-editor-error">Could not read status: ${escapeHtml(ed._readError)}</span>` : ''}
                     </div>
                     <button class="btn btn-secondary btn-small" onclick="viewEditorLog(${i})">View log</button>
@@ -638,6 +639,7 @@ function viewEditorLog(index) {
         `Host:          ${ed.hostApp || ''} ${ed.hostVersion || ''}`,
         `OS:            ${ed.os || ''}`,
         `Sync folder:   ${ed.syncFolder || '(not set)'}`,
+        `Installed in:  ${ed.installPath || '?'}${ed.installWritable === false ? '  (READ-ONLY: cannot auto-update, run install.bat)' : ''}`,
         `Session start: ${ed.sessionStarted || ''}`,
         `Last seen:     ${ed.lastSeen || ''}`,
         `Update check:  ${u.lastCheckResult || '-'} ${u.lastCheckAt ? '@ ' + u.lastCheckAt : ''}`,

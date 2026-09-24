@@ -1,6 +1,6 @@
 {
-    "version": "1.7.0",
-    "generatedAt": "2026-09-24T07:18:21.074Z",
+    "version": "1.8.0",
+    "generatedAt": "2026-09-24T07:31:56.137Z",
     "files": [
         {
             "path": "CSXS/manifest.xml",
@@ -59,8 +59,8 @@
         },
         {
             "path": "client/js/main.js",
-            "size": 118662,
-            "sha256": "5ac0840827e28921dc8a5f48d31b9e0124ededac1824f4ebfc28bedf77997c62"
+            "size": 118965,
+            "sha256": "7ef762896a69eade3a34f93459fb097b82064f46ade93dedd21ba08655fade29"
         },
         {
             "path": "client/js/project-id.js",
@@ -74,8 +74,8 @@
         },
         {
             "path": "client/js/telemetry.js",
-            "size": 13883,
-            "sha256": "72f3d722e511e76c53793b87df780ab81baa502d1ee56dddb9687ed9a46fbb84"
+            "size": 14295,
+            "sha256": "b23e2393c9b06382fca1edefdd9e4c9f08691ace516b167ee37a4f53fc5c11bf"
         },
         {
             "path": "client/js/test-auth.js",
@@ -89,8 +89,8 @@
         },
         {
             "path": "client/js/update-checker.js",
-            "size": 35066,
-            "sha256": "64e27348f538e9a6821e9ebd58da44e26341512a9ba7458895034883c3dc9145"
+            "size": 36833,
+            "sha256": "2402663d72aecb802646910c5a022a82d62e0a5afa10514efe0bb0d1b462eb61"
         },
         {
             "path": "client/js/update-core.js",

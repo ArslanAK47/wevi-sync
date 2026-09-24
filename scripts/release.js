@@ -64,6 +64,14 @@ function ask(question) {
     return new Promise(resolve => rl.question(question, answer => { rl.close(); resolve(answer); }));
 }
 
+// v1.7.0 shipped with changelog "y" (a confirmation typed into the wrong prompt).
+function changelogProblem(text) {
+    const t = String(text || '').trim();
+    if (!t) return 'Add a short changelog: editors see it on the update screen.';
+    if (/^(y|yes|n|no|x|ok|test)$/i.test(t) || t.length < 8) return `"${t}" is too short for a changelog; describe what changed.`;
+    return null;
+}
+
 function runTests() {
     log('▶ Running tests...');
     for (const t of ['test/run.js', 'test/load-smoke.js']) {
@@ -212,14 +220,15 @@ async function main() {
         const choice = (await ask('\nWhich release? [1/2/3 or X.Y.Z]: ')).trim();
         args.bump = { '1': 'patch', '2': 'minor', '3': 'major', '': 'patch' }[choice] || choice;
     }
-    if (!args.changelog && !args.buildOnly && process.stdin.isTTY) {
-        args.changelog = (await ask('What changed? (editors see this on the update screen): ')).trim();
-    }
     const version = UpdateCore.bumpVersion(current.version, args.bump);
     if (UpdateCore.compareVersions(version, current.version) <= 0) {
         fail(`New version v${version} must be higher than the current v${current.version}.`);
     }
-    if (!args.changelog) fail('Add a short changelog — editors see it on the update screen.');
+    while (process.stdin.isTTY && changelogProblem(args.changelog)) {
+        if (args.changelog) log('  ! ' + changelogProblem(args.changelog));
+        args.changelog = (await ask(`Describe v${version} in a sentence (editors see this on the update screen): `)).trim();
+    }
+    if (changelogProblem(args.changelog)) fail(changelogProblem(args.changelog));
 
     if (!args.dryRun) checkGitReady();
     if (!args.dryRun && process.stdin.isTTY) {

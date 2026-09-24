@@ -535,6 +535,22 @@ function removeDirRecursive(dir) {
     fs.rmdirSync(dir);
 }
 
+/** Can this panel write its own files? Program Files installs can't (Users = read-only). */
+function checkInstallWritable(extensionRoot) {
+    const fs = require('fs');
+    const path = require('path');
+    for (const dir of [extensionRoot, path.join(extensionRoot, 'client', 'js')]) {
+        const probe = path.join(dir, '.write-test');
+        try {
+            fs.writeFileSync(probe, 'x');
+            fs.unlinkSync(probe);
+        } catch (e) {
+            return { ok: false, error: `${e.code || 'error'} writing to ${dir}` };
+        }
+    }
+    return { ok: true };
+}
+
 function sha256Hex(buffer) {
     return require('crypto').createHash('sha256').update(buffer).digest('hex');
 }
@@ -601,6 +617,26 @@ async function performAutoUpdate() {
         const stagingRoot = path.join(extensionRoot, '.update-staging');
         const rawBase = target.downloadUrl || getUpdateUrls().rawBaseUrl;
         console.log(`[Update] Installing v${target.newVersion} into ${extensionRoot}`);
+
+        // A read-only install (e.g. copied into Program Files) can never update itself.
+        // Say so plainly instead of "succeeding" without changing anything.
+        const writable = checkInstallWritable(extensionRoot);
+        if (!writable.ok) {
+            console.warn('[Update] Install folder is read-only:', writable.error);
+            UpdateState.status = 'available';
+            renderUpdateStatus();
+            noteTelemetry({ lastAttemptAt: attemptAt, lastAttemptResult: 'read-only install: ' + extensionRoot });
+            setGateProgress(0, 'Needs a one-time reinstall');
+            setGateError(`Team Sync is installed in a protected folder, so it can't update itself:\n${extensionRoot}\n\n` +
+                'Fix (once): close Premiere, then run install.bat from the latest TeamSync-Installer.zip and approve the admin prompt. ' +
+                'It removes this copy and installs Team Sync in your user folder, where updates install automatically.');
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '🔁 Check again';
+                btn.dataset.action = 'update';
+            }
+            return;
+        }
 
         setGateProgress(3, 'Fetching file list...');
         const { entries, manifestText, verified } = await resolveUpdateFiles(rawBase, target.newVersion);

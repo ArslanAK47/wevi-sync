@@ -69,6 +69,8 @@
             hostVersion: info.hostVersion || '',
             os: info.os || '',
             syncFolder: info.syncFolder || '',
+            installPath: info.installPath || '',
+            installWritable: info.installWritable !== false,
             teamFolderId: info.teamFolderId || '',
             sessionStarted: info.sessionStarted || '',
             lastSeen: info.now || new Date().toISOString(),
@@ -122,6 +124,12 @@
         var env = hostEnv();
         var cfg = (typeof Config !== 'undefined' && Config.data) || {};
         var local = (typeof getLocalVersion === 'function') ? getLocalVersion() : {};
+        var installPath = '';
+        var installWritable = true;
+        try {
+            installPath = getExtensionRoot();
+            installWritable = checkInstallWritable(installPath).ok;
+        } catch (e) { }
         return buildSnapshot({
             email: cfg.editorEmail,
             name: cfg.editorName,
@@ -130,6 +138,8 @@
             hostVersion: env.appVersion,
             os: osString(),
             syncFolder: cfg.syncFolder,
+            installPath: installPath,
+            installWritable: installWritable,
             teamFolderId: cfg.teamFolderId,
             sessionStarted: sessionStarted,
             update: updateInfo,

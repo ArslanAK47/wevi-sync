@@ -37,6 +37,30 @@ if not exist "%CEP_DIR%" (
     echo    [OK] Created extensions directory
 )
 
+:: Remove Team Sync copies in Program Files: they are read-only, can't auto-update,
+:: and a duplicate bundle ID makes Premiere load either copy unpredictably.
+set "CPF=%CommonProgramFiles%"
+set "CPF86=%CommonProgramFiles(x86)%"
+for /d %%A in ("%ProgramFiles%\Adobe\*") do call :remove_copies "%%~A\CEP\extensions"
+call :remove_copies "%CPF%\Adobe\CEP\extensions"
+call :remove_copies "%CPF86%\Adobe\CEP\extensions"
+
+:: Leftovers an old updater bug wrote straight into %APPDATA%\Adobe\CEP\
+set "CEP_ROOT=%APPDATA%\Adobe\CEP"
+if exist "%CEP_ROOT%\CSXS\manifest.xml" (
+    findstr /c:"%EXT_ID%" "%CEP_ROOT%\CSXS\manifest.xml" >nul 2>&1 && (
+        echo    [..] Removing stray files from %CEP_ROOT%
+        for %%D in (client CSXS host icons test) do if exist "%CEP_ROOT%\%%D" rmdir /s /q "%CEP_ROOT%\%%D"
+        for %%F in (version.json files.json .debug OAUTH_SETUP_STEPS.md oauth-activation-html.txt TESTING.md) do if exist "%CEP_ROOT%\%%F" del /q "%CEP_ROOT%\%%F"
+    )
+)
+
+:: A symlink/junction here (e.g. a dev link to a drive that no longer exists): remove the link only
+fsutil reparsepoint query "%INSTALL_DIR%" >nul 2>&1 && (
+    echo    [..] Removing old link at %INSTALL_DIR%
+    rmdir "%INSTALL_DIR%"
+)
+
 :: Remove old version if exists
 if exist "%INSTALL_DIR%" (
     echo    [..] Removing old version...
@@ -77,3 +101,17 @@ echo   Extension installed to:
 echo   %INSTALL_DIR%
 echo.
 pause
+exit /b 0
+
+:: ---- remove every Team Sync copy directly inside folder %1 ----
+:remove_copies
+if not exist "%~1" exit /b 0
+for /d %%E in ("%~1\*") do (
+    if exist "%%~E\CSXS\manifest.xml" (
+        findstr /c:"%EXT_ID%" "%%~E\CSXS\manifest.xml" >nul 2>&1 && (
+            echo    [..] Removing old copy: %%~E
+            rmdir /s /q "%%~E"
+        )
+    )
+)
+exit /b 0
