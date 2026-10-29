@@ -602,6 +602,55 @@ test('telemetryFileName is stable and filesystem-safe', () => {
     assert.strictEqual(Telemetry.telemetryFileName('Ed.One+x@Gmail.com'), 'TeamSync-Telemetry-ed.one_x@gmail.com.json');
 });
 
+/* ---------------- host JSON polyfill ---------------- */
+section('host-json');
+
+// Premiere's ExtendScript engine has no JSON unless another panel adds one (Usman's machine).
+function loadHostWithoutJson(app) {
+    const ctx = vm.createContext({ app: app });
+    vm.runInContext('delete this.JSON;', ctx);
+    assert.strictEqual(vm.runInContext('typeof JSON', ctx), 'undefined');
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'host', 'index.jsx'), 'utf8'), ctx);
+    return ctx;
+}
+
+test('getActiveProject works when the engine has no JSON', () => {
+    const ctx = loadHostWithoutJson({ project: { name: 'Waleed Oct Batch.prproj', path: 'E:\\Pr projects\\Waleed Oct Batch.prproj', documentModified: false } });
+    const out = vm.runInContext('getActiveProject()', ctx);
+    assert.deepStrictEqual(JSON.parse(out), { name: 'Waleed Oct Batch.prproj', path: 'E:\\Pr projects\\Waleed Oct Batch.prproj', modified: 'No' });
+});
+
+test('polyfill stringify matches native JSON', () => {
+    const ctx = loadHostWithoutJson({});
+    const samples = [
+        { a: 'quote " back \\ nl \n tab \t ctl \u0001 ls \u2028', b: [1, 2.5, -3e-7, null, true, false], c: { d: [] , e: {} } },
+        [undefined, function () {}, NaN, Infinity],
+        { skip: undefined, fn: function () {}, keep: 0 },
+        'E:\\Pr projects\\a.prproj', 42, null
+    ];
+    samples.forEach(s => {
+        ctx.__s = s;
+        // Same value back; the polyfill may escape a few extra chars (e.g. U+2028), still valid JSON.
+        assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(__s)', ctx)), JSON.parse(JSON.stringify(s)));
+    });
+});
+
+test('polyfill parse round-trips and rejects code', () => {
+    const ctx = loadHostWithoutJson({});
+    const text = JSON.stringify([{ o: 'E:\\old\\clip.mp4', n: 'F:\\new\\clip "1".mp4' }]);
+    ctx.__t = text;
+    assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(JSON.parse(__t))', ctx)), JSON.parse(text));
+    ctx.__bad = '(function(){ return 1; })()';
+    assert.throws(() => vm.runInContext('JSON.parse(__bad)', ctx));
+});
+
+test('native JSON is left alone when present', () => {
+    const ctx = vm.createContext({ app: {} });
+    vm.runInContext('var nativeJSON = JSON;', ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'host', 'index.jsx'), 'utf8'), ctx);
+    assert.strictEqual(vm.runInContext('JSON === nativeJSON', ctx), true);
+});
+
 /* ---------------- summary ---------------- */
 process.stdout.write('\n\n');
 if (failed) {

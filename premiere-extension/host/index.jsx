@@ -6,6 +6,72 @@
 // This file allows the extension to interact with Premiere Pro
 
 /**
+ * JSON polyfill. Premiere's ExtendScript has no built-in JSON; it only exists when
+ * some other panel happens to load one into the shared engine. Without it every
+ * host call fails ("JSON is undefined") and the panel shows "No project open".
+ * Covers what this file uses: JSON.stringify(value) and JSON.parse(text).
+ */
+if (typeof JSON !== 'object' || !JSON || typeof JSON.stringify !== 'function' || typeof JSON.parse !== 'function') {
+    JSON = (function () {
+        var escapable = /[\\\"\u0000-\u001f\u007f-\u009f\u00ad\u0600-\u0604\u070f\u17b4\u17b5\u200c-\u200f\u2028-\u202f\u2060-\u206f\ufeff\ufff0-\uffff]/g;
+        var meta = { '\b': '\\b', '\t': '\\t', '\n': '\\n', '\f': '\\f', '\r': '\\r', '"': '\\"', '\\': '\\\\' };
+
+        function quote(s) {
+            escapable.lastIndex = 0;
+            return '"' + s.replace(escapable, function (c) {
+                return meta[c] || '\\u' + ('0000' + c.charCodeAt(0).toString(16)).slice(-4);
+            }) + '"';
+        }
+
+        function str(value) {
+            if (value === null) return 'null';
+            if (value && typeof value.toJSON === 'function') value = value.toJSON();
+            switch (typeof value) {
+                case 'string': return quote(value);
+                case 'number': return isFinite(value) ? String(value) : 'null';
+                case 'boolean': return String(value);
+                case 'object':
+                    if (value === null) return 'null';
+                    if (value instanceof String) return quote(String(value));
+                    if (value instanceof Number) return isFinite(value) ? String(Number(value)) : 'null';
+                    if (value instanceof Boolean) return String(value.valueOf());
+                    var parts = [], i, v;
+                    if (Object.prototype.toString.call(value) === '[object Array]') {
+                        for (i = 0; i < value.length; i++) {
+                            v = str(value[i]);
+                            parts.push(v === undefined ? 'null' : v);
+                        }
+                        return '[' + parts.join(',') + ']';
+                    }
+                    for (var k in value) {
+                        if (Object.prototype.hasOwnProperty.call(value, k)) {
+                            v = str(value[k]);
+                            if (v !== undefined) parts.push(quote(k) + ':' + v);
+                        }
+                    }
+                    return '{' + parts.join(',') + '}';
+            }
+            return undefined; // undefined / functions are skipped, as in native JSON
+        }
+
+        return {
+            stringify: function (value) { return str(value); },
+            parse: function (text) {
+                text = String(text);
+                // json2's safety check: only JSON tokens may remain before eval.
+                if (/^[\],:{}\s]*$/.test(text
+                        .replace(/\\(?:["\\\/bfnrt]|u[0-9a-fA-F]{4})/g, '@')
+                        .replace(/"[^"\\\n\r]*"|true|false|null|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?/g, ']')
+                        .replace(/(?:^|:|,)(?:\s*\[)+/g, ''))) {
+                    return eval('(' + text + ')');
+                }
+                throw new SyntaxError('JSON.parse: invalid JSON');
+            }
+        };
+    })();
+}
+
+/**
  * Get the currently active project
  */
 function getActiveProject() {
